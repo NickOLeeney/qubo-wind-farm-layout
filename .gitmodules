@@ -1,0 +1,3 @@
+[submodule "external/thomas-wflo-benchmark"]
+	path = external/thomas-wflo-benchmark
+	url = https://github.com/jaredthomas68/thomas2022-8-opt-algs-wflop.git
