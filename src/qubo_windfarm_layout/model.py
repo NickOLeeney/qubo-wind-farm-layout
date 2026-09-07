@@ -7,8 +7,6 @@ from shapely.ops import unary_union
 from shapely.geometry import Polygon
 from shapely.geometry.multipolygon import MultiPolygon
 
-sys.path.append("..")
-from src.qubo_windfarm_layout.model import get_farm_area, get_mask
 
 sys.path.append("../external/thomas-wflo-benchmark/src/physics-models")
 from provided_model import (
@@ -61,7 +59,7 @@ turb_ci, turb_co, rated_ws, rated_pwr, turb_diam = (
 # --------------------------------------------------------------------------------------------- #
 
 
-def get_farm_area(BOUNDARY_FILE):
+def get_farm_area():
     with open(BOUNDARY_FILE) as f:
         boundary_data = yaml.safe_load(f)
 
