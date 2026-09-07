@@ -109,7 +109,7 @@ def build_wake_loss_matrix_optimized(
     # 1. AEP singola turbina
     # --------------------------------------------------
 
-    A0 = _compute_aep_from_coords(
+    A0 = compute_aep_from_coords(
         [candidate_locations[0]]
     )
 
@@ -186,7 +186,7 @@ def build_wake_loss_matrix_optimized(
             dy_grid * grid_resolution,
         ])
 
-        aep_pair = _compute_aep_from_coords(
+        aep_pair = compute_aep_from_coords(
             [
                 origin,
                 second_turbine,
@@ -308,7 +308,7 @@ def build_qubo_from_wake_matrix_optimized(
     return Q, offset
 
 
-def _compute_aep_from_coords(coords):
+def compute_aep_from_coords(coords):
     aep_by_direction = calcAEPcs3(
         turb_coords=np.asarray(coords),
         wind_freq=wind_dir_freq,
