@@ -94,9 +94,11 @@ def get_mask(farm_area: MultiPolygon, grid_resolution: int=200):
     return X, Y, mask
 
 
+
 def build_wake_loss_matrix_optimized(
     candidate_locations,
     grid_resolution,
+    output_path=None,
 ):
     candidate_locations = np.asarray(
         candidate_locations,
@@ -119,23 +121,17 @@ def build_wake_loss_matrix_optimized(
 
     i_idx, j_idx = np.triu_indices(n, k=1)
 
-    # shape = (n_pairs, 2)
     displacements = (
         candidate_locations[j_idx]
         - candidate_locations[i_idx]
     )
 
-    # Passiamo a coordinate intere sulla griglia:
-    # ad esempio 400 m -> 2 se resolution = 200 m
     grid_displacements = np.rint(
         displacements / grid_resolution
     ).astype(np.int32)
 
     # --------------------------------------------------
     # 3. Canonicalizzazione
-    #
-    # (dx,dy) e (-dx,-dy) rappresentano la stessa
-    # coppia geometrica non ordinata.
     # --------------------------------------------------
 
     dx = grid_displacements[:, 0]
@@ -149,7 +145,7 @@ def build_wake_loss_matrix_optimized(
     grid_displacements[flip] *= -1
 
     # --------------------------------------------------
-    # 4. Troviamo solamente i displacement unici
+    # 4. Displacement unici
     # --------------------------------------------------
 
     unique_displacements, inverse = np.unique(
@@ -166,8 +162,7 @@ def build_wake_loss_matrix_optimized(
     )
 
     # --------------------------------------------------
-    # 5. Physics model:
-    #    UNA chiamata per displacement unico
+    # 5. Physics model
     # --------------------------------------------------
 
     unique_losses = np.empty(
@@ -186,12 +181,10 @@ def build_wake_loss_matrix_optimized(
             dy_grid * grid_resolution,
         ])
 
-        aep_pair = compute_aep_from_coords(
-            [
-                origin,
-                second_turbine,
-            ]
-        )
+        aep_pair = compute_aep_from_coords([
+            origin,
+            second_turbine,
+        ])
 
         unique_losses[k] = max(
             0.0,
@@ -199,14 +192,13 @@ def build_wake_loss_matrix_optimized(
         )
 
     # --------------------------------------------------
-    # 6. Mapping vettoriale:
-    #    displacement -> coppia originale
+    # 6. Mapping displacement -> coppie
     # --------------------------------------------------
 
     pair_losses = unique_losses[inverse]
 
     # --------------------------------------------------
-    # 7. Costruzione della matrice L
+    # 7. Costruzione wake-loss matrix
     # --------------------------------------------------
 
     L = np.zeros(
@@ -217,7 +209,45 @@ def build_wake_loss_matrix_optimized(
     L[i_idx, j_idx] = pair_losses
     L[j_idx, i_idx] = pair_losses
 
-    return L, A0
+    # --------------------------------------------------
+    # 8. Save
+    # --------------------------------------------------
+
+    if output_path is not None:
+
+        output_path = Path(output_path)
+
+        output_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        np.savez_compressed(
+            output_path,
+            wake_loss_matrix=L,
+            A0=A0,
+            candidate_locations=candidate_locations,
+            grid_resolution=grid_resolution,
+        )
+
+        print(
+            f"Wake-loss data saved to: "
+            f"{output_path}"
+        )
+
+    return None
+
+
+def load_wake_loss_data(filepath):
+
+    data = np.load(filepath)
+
+    return {
+        "wake_loss_matrix": data["wake_loss_matrix"],
+        "A0": float(data["A0"]),
+        "candidate_locations": data["candidate_locations"],
+        "grid_resolution": int(data["grid_resolution"]),
+    }
 
 
 def build_qubo_from_wake_matrix_optimized(
