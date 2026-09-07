@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
-from src.qubo_windfarm_layout.model import get_farm_area, _compute_aep_from_coords
+from src.qubo_windfarm_layout.model import get_farm_area
 
 def plot_selected_layout(
     selected_locations,
@@ -14,11 +14,6 @@ def plot_selected_layout(
     )
 
     polygons, _ = get_farm_area()
-
-    # AEP totale del layout
-    total_aep = _compute_aep_from_coords(
-        selected_locations
-    )
 
     _, ax = plt.subplots(figsize=figsize)
 
@@ -54,7 +49,6 @@ def plot_selected_layout(
     ax.set_title(
         f"Optimized wind farm layout\n"
         f"{len(selected_locations)} turbines — "
-        f"AEP: {total_aep / 1000:.3f} GWh/year"
     )
 
     plt.show()
