@@ -1,6 +1,7 @@
 import yaml
 import numpy as np
 from pathlib import Path
+from scipy.spatial.distance import cdist
 
 OUTPUT_DIR = "../results/layouts"
 
@@ -121,4 +122,24 @@ def save_benchmark_layout(
 
     return output_path
 
+
+def get_invalid_pairs(candidate_locations, min_distance):
+    distances = cdist(
+        candidate_locations,
+        candidate_locations
+    )
+
+    invalid_pairs = np.argwhere(
+        (distances < min_distance)
+        & (distances > 0)
+    )
+
+    invalid_pairs = np.argwhere(
+        np.triu(
+            (distances < min_distance)
+            & (distances > 0),
+            k=1
+        )
+    )
+    return invalid_pairs
 
