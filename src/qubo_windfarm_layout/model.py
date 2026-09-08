@@ -7,8 +7,8 @@ from shapely.ops import unary_union
 from shapely.geometry import Polygon
 from shapely.geometry.multipolygon import MultiPolygon
 
-
-sys.path.append("../external/thomas-wflo-benchmark/src/physics-models")
+_PROJECT_ROOT = Path(__file__).parents[2]
+sys.path.insert(0, str(_PROJECT_ROOT / "external" / "thomas-wflo-benchmark" / "src" / "physics-models"))
 from provided_model import (
     calcAEPcs3,
     getWindRoseYAML,
@@ -16,13 +16,7 @@ from provided_model import (
 )
 
 # Setup
-ROOT = Path.cwd()
-
-# se il notebook viene eseguito dalla cartella notebooks/
-if ROOT.name == "notebooks":
-    ROOT = ROOT.parent
-
-BENCHMARK_ROOT = ROOT / "external" / "thomas-wflo-benchmark"
+BENCHMARK_ROOT = _PROJECT_ROOT / "external" / "thomas-wflo-benchmark"
 
 BOUNDARY_FILE = (
     BENCHMARK_ROOT

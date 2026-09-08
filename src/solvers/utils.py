@@ -3,7 +3,8 @@ import numpy as np
 from pathlib import Path
 from scipy.spatial.distance import cdist
 
-OUTPUT_DIR = "../results/layouts"
+_PROJECT_ROOT = Path(__file__).parents[2]
+OUTPUT_DIR = _PROJECT_ROOT / "results" / "layouts"
 
 def save_benchmark_layout(
     selected_locations,
