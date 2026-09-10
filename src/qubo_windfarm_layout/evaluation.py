@@ -102,9 +102,9 @@ def evaluate_layout(
     # Official AEP
     # --------------------------------------------------------
 
-    aep_mwh = compute_aep_from_coords(
+    aep_mwh = float(compute_aep_from_coords(
         coords
-    )
+    ))
 
     aep_gwh = aep_mwh / 1000.0
 
@@ -174,34 +174,22 @@ def evaluate_layout(
     )
 
     return {
-        "n_turbines": n_turbines,
-        "aep_gwh": aep_gwh,
-        "wake_loss_pct": wake_loss_pct,
-        "min_distance_m": min_distance_m,
-        "valid_cardinality": valid_cardinality,
-        "valid_spacing": valid_spacing,
-        "valid_boundary": valid_boundary,
-        "valid": valid,
+        "n_turbines": int(n_turbines),
+        "aep_gwh": float(aep_gwh),
+        "wake_loss_pct": float(wake_loss_pct),
+        "min_distance_m": float(min_distance_m),
+        "valid_cardinality": bool(valid_cardinality),
+        "valid_spacing": bool(valid_spacing),
+        "valid_boundary": bool(valid_boundary),
+        "valid": bool(valid),
     }
 
 
-def get_benchmark_comparison():
-    # ============================================================
-    # Load precomputed Thomas et al. reference results
-    # ============================================================
-
-    df_reference = pd.read_csv(
-        REFERENCE_RESULTS_FILE
-    )
-
-    print(
-        f"Loaded {len(df_reference)} "
-        f"reference layouts."
-    )
-
+def get_benchmark_comparison(include_benchmark=True):
+    _REQUIRED_METRICS = {"aep_gwh", "wake_loss_pct", "min_distance_m", "valid"}
 
     # ============================================================
-    # Benchmark constants
+    # Benchmark constants (always needed for cache misses)
     # ============================================================
 
     _, farm_area = get_farm_area()
@@ -219,7 +207,7 @@ def get_benchmark_comparison():
 
 
     # ============================================================
-    # Evaluate our layouts
+    # Evaluate our layouts (with cache)
     # ============================================================
 
     our_results = []
@@ -230,19 +218,36 @@ def get_benchmark_comparison():
 
     for filepath in layout_files:
 
-        solver_name = get_solver_name( 
-            filepath
-        )
+        with open(filepath) as f:
+            raw = yaml.safe_load(f)
 
-        coords = load_layout_coordinates(
-            filepath
-        )
+        if not raw:
+            print(f"Skipping {filepath.name}: empty or invalid YAML")
+            continue
 
-        metrics = evaluate_layout(
-            coords=coords,
-            single_turbine_aep=single_turbine_aep,
-            farm_area=farm_area,
-        )
+        solver_name = raw.get("metadata", {}).get("solver", filepath.stem)
+
+        cached = raw.get("metadata", {}).get("cached_metrics", {})
+
+        if _REQUIRED_METRICS.issubset(cached):
+            metrics = cached
+        else:
+            coords = load_layout_coordinates(filepath)
+            metrics = evaluate_layout(
+                coords=coords,
+                single_turbine_aep=single_turbine_aep,
+                farm_area=farm_area,
+            )
+            raw.setdefault("metadata", {})["cached_metrics"] = metrics
+            with open(filepath, "w") as f:
+                yaml.safe_dump(raw, f, sort_keys=False)
+
+            print(
+                f"{solver_name:<25} | "
+                f"AEP {metrics['aep_gwh']:.3f} GWh | "
+                f"wake loss {metrics['wake_loss_pct']:.3f}% | "
+                f"valid={metrics['valid']}"
+            )
 
         our_results.append({
             "method": solver_name,
@@ -251,74 +256,53 @@ def get_benchmark_comparison():
             **metrics,
         })
 
+    df_ours = pd.DataFrame(our_results)
+
+
+    # ============================================================
+    # Combine with reference results (optional)
+    # ============================================================
+
+    if include_benchmark:
+        df_reference = pd.read_csv(REFERENCE_RESULTS_FILE)
+
         print(
-            f"{solver_name:<25} | "
-            f"AEP {metrics['aep_gwh']:.3f} GWh | "
-            f"wake loss {metrics['wake_loss_pct']:.3f}% | "
-            f"valid={metrics['valid']}"
+            f"Loaded {len(df_reference)} "
+            f"reference layouts."
         )
 
+        df_results = pd.concat(
+            [df_reference, df_ours],
+            ignore_index=True,
+        )
 
-    df_ours = pd.DataFrame(
-        our_results
-    )
-
-
-    # ============================================================
-    # Combine reference + our results
-    # ============================================================
-
-    df_results = pd.concat(
-        [
-            df_reference,
-            df_ours,
-        ],
-        ignore_index=True,
-    )
-
-
-    # ============================================================
-    # Comparison metrics
-    # ============================================================
-
-    baseline_aep = df_results.loc[
-        df_results["method"] == "Baseline",
-        "aep_gwh",
-    ].iloc[0]
-
-
-    # Best solver from Thomas et al.
-    best_reference_aep = (
-        df_reference.loc[
-            df_reference["method"] != "Baseline",
+        baseline_aep = df_results.loc[
+            df_results["method"] == "Baseline",
             "aep_gwh",
-        ]
-        .max()
-    )
+        ].iloc[0]
 
-
-    df_results[
-        "improvement_vs_baseline_pct"
-    ] = (
-        100.0
-        * (
-            df_results["aep_gwh"]
-            - baseline_aep
+        best_reference_aep = (
+            df_reference.loc[
+                df_reference["method"] != "Baseline",
+                "aep_gwh",
+            ]
+            .max()
         )
-        / baseline_aep
-    )
 
-
-    df_results[
-        "gap_vs_best_reference_pct"
-    ] = (
-        100.0
-        * (
-            best_reference_aep
-            - df_results["aep_gwh"]
+        df_results["improvement_vs_baseline_pct"] = (
+            100.0
+            * (df_results["aep_gwh"] - baseline_aep)
+            / baseline_aep
         )
-        / best_reference_aep
-    )
+
+        df_results["gap_vs_best_reference_pct"] = (
+            100.0
+            * (best_reference_aep - df_results["aep_gwh"])
+            / best_reference_aep
+        )
+
+    else:
+        df_results = df_ours.copy()
 
 
     # ============================================================
@@ -333,21 +317,5 @@ def get_benchmark_comparison():
         )
         .reset_index(drop=True)
     )
-
-
-    # ============================================================
-    # Display
-    # ============================================================
-
-    columns = [
-        "method",
-        "source",
-        "aep_gwh",
-        "wake_loss_pct",
-        "improvement_vs_baseline_pct",
-        "gap_vs_best_reference_pct",
-        "min_distance_m",
-        "valid",
-    ]
 
     return df_results

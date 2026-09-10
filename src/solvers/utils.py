@@ -11,7 +11,8 @@ def save_benchmark_layout(
     solver_name,
     filename=None,
     grid_resolution=None,
-    time_limit_s=None
+    time_limit_s=None,
+    metrics=None,
 ):
     """
     Salva un layout nello stesso schema utilizzato dai file
@@ -51,7 +52,8 @@ def save_benchmark_layout(
             "solver": solver_name,
             "grid_resolution": grid_resolution,
             "n_turbines": len(selected_locations),
-            "time_limit_s": time_limit_s
+            "time_limit_s": time_limit_s,
+            **({"cached_metrics": metrics} if metrics is not None else {}),
         },
 
         "definitions": {
