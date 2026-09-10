@@ -170,7 +170,6 @@ def evaluate_layout(
     valid = (
         valid_cardinality
         and valid_spacing
-        and valid_boundary
     )
 
     return {

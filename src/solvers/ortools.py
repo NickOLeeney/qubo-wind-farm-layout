@@ -1,8 +1,9 @@
+import datetime
 import numpy as np
 from ortools.sat.python import cp_model
+from ortools.math_opt.python import mathopt
 
-
-def solve_wflo_ortools(
+def solve_wflo_cpsat(
     wake_loss_matrix,
     invalid_pairs,
     n_turbines=81,
@@ -214,3 +215,189 @@ def solve_wflo_ortools(
     )
 
     return solution, solver
+
+
+
+
+
+def solve_wflo_gscip(
+    wake_loss_matrix,
+    invalid_pairs,
+    n_turbines=81,
+    time_limit_s=300,
+    min_wake_loss=0.0,
+):
+    """
+    Solve WFLO using GSCIP through OR-Tools MathOpt.
+
+    Objective:
+        min sum_{i<j} L_ij * z_i * z_j
+
+    Constraints:
+        sum_i z_i = n_turbines
+        z_i + z_j <= 1   for every invalid spacing pair
+
+    Unlike the pywraplp implementation, quadratic terms are passed
+    directly to GSCIP: no auxiliary y_ij variables and no McCormick
+    linearisation are introduced.
+    """
+
+    L = np.asarray(
+        wake_loss_matrix,
+        dtype=float,
+    )
+
+    n = L.shape[0]
+
+    if L.shape != (n, n):
+        raise ValueError(
+            "wake_loss_matrix must be square."
+        )
+
+    # --------------------------------------------------
+    # Model
+    # --------------------------------------------------
+
+    model = mathopt.Model(
+        name="wflo_gscip"
+    )
+
+    # Binary turbine-selection variables
+    z = [
+        model.add_binary_variable(
+            name=f"z_{i}"
+        )
+        for i in range(n)
+    ]
+
+    # --------------------------------------------------
+    # Cardinality constraint
+    #
+    # sum_i z_i = K
+    # --------------------------------------------------
+
+    model.add_linear_constraint(
+        sum(z) == n_turbines,
+        name="cardinality",
+    )
+
+    # --------------------------------------------------
+    # Minimum-spacing constraints
+    #
+    # z_i + z_j <= 1
+    # --------------------------------------------------
+
+    for i, j in invalid_pairs:
+        i = int(i)
+        j = int(j)
+
+        model.add_linear_constraint(
+            z[i] + z[j] <= 1,
+            name=f"spacing_{i}_{j}",
+        )
+
+    # --------------------------------------------------
+    # Quadratic wake-loss objective
+    #
+    # min sum_{i<j} L_ij z_i z_j
+    #
+    # IMPORTANT:
+    # We only use the upper triangle because L is symmetric.
+    # --------------------------------------------------
+
+    objective = 0.0
+    n_quadratic_terms = 0
+
+    for i in range(n):
+        for j in range(i + 1, n):
+
+            loss = float(L[i, j])
+
+            if loss <= min_wake_loss:
+                continue
+
+            objective += (
+                loss
+                * z[i]
+                * z[j]
+            )
+
+            n_quadratic_terms += 1
+
+    model.minimize_quadratic_objective(
+        objective
+    )
+
+    # --------------------------------------------------
+    # Solver parameters
+    # --------------------------------------------------
+
+    params = mathopt.SolveParameters(
+        time_limit=datetime.timedelta(
+            seconds=time_limit_s
+        ),
+        enable_output=True,
+    )
+
+    # --------------------------------------------------
+    # Solve with GSCIP
+    # --------------------------------------------------
+
+    result = mathopt.solve(
+        model,
+        mathopt.SolverType.GSCIP,
+        params=params,
+    )
+
+    # --------------------------------------------------
+    # Check termination
+    # --------------------------------------------------
+
+    if result.termination.reason not in (
+        mathopt.TerminationReason.OPTIMAL,
+        mathopt.TerminationReason.FEASIBLE,
+    ):
+        raise RuntimeError(
+            "GSCIP: no feasible solution. "
+            f"Termination: {result.termination}"
+        )
+
+    # --------------------------------------------------
+    # Extract solution
+    # --------------------------------------------------
+
+    values = result.variable_values()
+
+    solution = np.array(
+        [
+            round(values[z[i]])
+            for i in range(n)
+        ],
+        dtype=int,
+    )
+
+    # --------------------------------------------------
+    # Output
+    # --------------------------------------------------
+
+    print(
+        "Termination:",
+        result.termination.reason,
+    )
+
+    print(
+        f"Turbine selezionate: "
+        f"{solution.sum()}"
+    )
+
+    print(
+        f"Quadratic wake terms: "
+        f"{n_quadratic_terms:,}"
+    )
+
+    print(
+        f"Pairwise wake loss: "
+        f"{result.objective_value():,.6f}"
+    )
+
+    return solution, model

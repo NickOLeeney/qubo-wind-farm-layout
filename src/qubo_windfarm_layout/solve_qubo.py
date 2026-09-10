@@ -8,7 +8,7 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 
 from src.qubo_windfarm_layout.model import get_farm_area, get_mask, build_qubo_from_wake_matrix_optimized, build_wake_loss_matrix_optimized, load_wake_loss_data
 from src.solvers.utils import get_invalid_pairs, save_benchmark_layout
-from src.solvers.ortools import solve_wflo_ortools
+from src.solvers.ortools import solve_wflo_cpsat
 
 # Variables
 GRID_RESOLUTION = 150 # m
@@ -48,7 +48,7 @@ def solve(grid_resolution: int = GRID_RESOLUTION, time_limit_s: int = 10):
         n_turbines=81,
     )
 
-    z_solution, solver = solve_wflo_ortools(
+    z_solution, solver = solve_wflo_cpsat(
         wake_loss_matrix=wake_loss_matrix,
         invalid_pairs=invalid_pairs,
         n_turbines=81,

@@ -483,7 +483,7 @@ def solve_wflo_sqbm(
     sqbm_result : SQBMResult
         Risultato grezzo restituito dal server SQBM+.
     """
-    from src.solvers.dwave_sa import _greedy_repair
+    from solvers.dwave import _greedy_repair
 
     Q = np.asarray(Q, dtype=float)
     n = Q.shape[0]
