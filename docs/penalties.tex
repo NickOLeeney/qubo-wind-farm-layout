@@ -1,6 +1,9 @@
+
 \documentclass[11pt,a4paper]{report}
 
 \usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[italian]{babel}
 \usepackage{textcomp}
 \usepackage{siunitx}
 \usepackage{caption}
@@ -11,6 +14,10 @@
 \usepackage{braket}
 \usepackage{float}
 \usepackage[most]{tcolorbox}
+\usepackage{geometry}
+\usepackage{hyperref}
+
+\geometry{margin=2.5cm}
 
 \title{QUBO Penalty Calibration}
 \author{Maicol Nicolini}
@@ -19,15 +26,58 @@
 \begin{document}
 
 \maketitle
-
 \newpage
 \tableofcontents
 \newpage
 
-\chapter{Penalties}
+% ============================================================
+\chapter{Introduzione}
+% ============================================================
 
-Abbiamo visto che la nostra modellistica QUBO porta alla seguente
-funzione obiettivo:
+Consideriamo una formulazione QUBO del tipo
+
+\[
+H(\mathbf z)
+=
+H_{\mathrm{obj}}(\mathbf z)
++
+\sum_r \lambda_r H_r(\mathbf z),
+\]
+
+dove $H_{\mathrm{obj}}$ rappresenta la funzione obiettivo del problema
+originale e i termini $H_r$ codificano i vincoli tramite penalità.
+
+La scelta dei coefficienti $\lambda_r$ è cruciale:
+una penalità troppo piccola può rendere conveniente la violazione del
+vincolo, mentre una penalità eccessivamente grande può peggiorare la
+scalatura numerica del QUBO e, nel caso di solver quantum o
+quantum-inspired, alterare sfavorevolmente la scala energetica del
+problema.
+
+L'obiettivo di questo documento è raccogliere due famiglie di strategie
+per la calibrazione delle penalty:
+
+\begin{enumerate}
+    \item \textbf{problem-based penalty calibration}, in cui si sfrutta
+    direttamente la struttura del problema e l'interpretazione fisica
+    dei termini della funzione obiettivo;
+    \item \textbf{relaxation-based penalty calibration}, in cui si
+    costruisce un lower bound della funzione obiettivo mediante
+    Semidefinite Programming (SDP) relaxation e si combina tale bound con
+    una soluzione feasible nota.
+\end{enumerate}
+
+Nel seguito utilizzeremo come esempio guida il problema di Wind Farm
+Layout Optimization (WFLO) formulato come QUBO.
+
+% ============================================================
+\chapter{Problem-based penalty calibration}
+% ============================================================
+
+\section{Formulazione QUBO del WFLO}
+
+La formulazione considerata è
+
 \[
 H(\mathbf z)
 =
@@ -35,117 +85,133 @@ H_{\mathrm{wake}}(\mathbf z)
 +
 \lambda_N
 \left(
-\sum_i z_i - K
+\sum_i z_i-K
 \right)^2
 +
 \lambda_S
-\sum_{(i,j)\in\mathcal{E}_{\mathrm{inv}}}
-z_i z_j.
+\sum_{(i,j)\in\mathcal E_{\mathrm{inv}}}
+z_i z_j,
 \]
-Nella formulazione considerata in questo capitolo,
+
+dove
 
 \[
 H_{\mathrm{wake}}(\mathbf z)
 =
-\sum_{i<j} L_{ij} z_i z_j,
+\sum_{i<j}L_{ij}z_i z_j.
 \]
-dove $L_{ij}\geq 0$ rappresenta la perdita energetica pairwise dovuta
-all'interazione aerodinamica tra le turbine $i$ e $j$. \newline
 
-Si assume quindi di utilizzare la formulazione QUBO ridotta, nella quale
-il termine
+Il coefficiente $L_{ij}\geq 0$ rappresenta la perdita energetica pairwise
+dovuta all'interazione aerodinamica tra le turbine nelle candidate
+locations $i$ e $j$.
+
+Nel caso del benchmark considerato,
+
+\[
+K=81.
+\]
+
+Si assume di utilizzare la formulazione QUBO ridotta, nella quale il
+termine lineare
+
 \[
 -A_0\sum_i z_i
 \]
-è stato rimosso. Tale termine è infatti costante nello spazio delle
-soluzioni feasible, poiché queste contengono esattamente $K=81$ turbine. \newline
 
-Un'accurata scelta delle penalty è essenziale nella modellistica QUBO: una penalty troppo 
-piccola può rendere conveniente la violazione di un
-vincolo, mentre una penalty eccessivamente grande può peggiorare la
-scalatura dei coefficienti della matrice QUBO e rendere più difficile
-l'ottimizzazione. \newline
-L'idea utilizzata per dimensionare le penalty consiste quindi nel
-rispondere, per ciascun vincolo, alla domanda:
+è stato rimosso. Tale termine è infatti costante nello spazio delle
+soluzioni feasible, poiché ogni soluzione valida contiene esattamente
+$K=81$ turbine.
+
+\section{Principio generale}
+
+L'idea utilizzata per dimensionare le penalty è rispondere, per ciascun
+vincolo, alla domanda:
+
 \begin{center}
 \emph{Qual è il massimo beneficio che il modello potrebbe ottenere
 violando questo vincolo?}
 \end{center}
 
-Una volta stimato tale beneficio, scegliamo una penalty sufficientemente
-maggiore da rendere la violazione del vincolo energeticamente
-sconveniente. \newline
-In generale, vogliamo quindi ottenere penalty quanto più piccole
-possibile, ma sufficientemente grandi da garantire, o almeno favorire
-fortemente, la feasibility della soluzione.
+Una volta stimato tale beneficio, si sceglie una penalità sufficientemente
+grande da rendere la violazione energeticamente sconveniente.
 
+In generale, si desidera una penalty:
+
+\begin{itemize}
+    \item sufficientemente grande da favorire o garantire la feasibility;
+    \item sufficientemente piccola da non dominare inutilmente la funzione
+    obiettivo.
+\end{itemize}
+
+% ------------------------------------------------------------
 \section{Vincolo sulla cardinalità}
+% ------------------------------------------------------------
 
-Il problema impone l'utilizzo di esattamente $K=81$ turbine:
+Il problema impone
+
 \[
 \sum_i z_i = K.
 \]
 
-Questo implica che, per ogni soluzione feasible, il contributo ideale
-associato alla produzione di turbine isolate sarebbe pari a
-\[
-K A_0 = 81 A_0,
-\]
-dove $A_0$ è l'Annual Energy Production di una singola turbina isolata. \newline
+Poiché $L_{ij}\geq 0$, in assenza di questo vincolo il modello sarebbe
+naturalmente incentivato a selezionare meno turbine, riducendo il numero
+di interazioni aerodinamiche.
 
-Poiché tale contributo è costante tra tutte le soluzioni feasible,
-l'ottimizzazione può concentrarsi sulla minimizzazione delle wake losses:
+Il problema consiste quindi nello stimare quanto possa diminuire
 
 \[
 H_{\mathrm{wake}}(\mathbf z)
-=
-\sum_{i<j} L_{ij} z_i z_j.
 \]
-Poiché $L_{ij}\geq 0$, in assenza del vincolo di cardinalità il modello
-sarebbe naturalmente incentivato a selezionare meno turbine, riducendo
-così il numero di interazioni aerodinamiche. Dobbiamo quindi quantificare il massimo beneficio ottenibile rimuovendo
-una turbina.
+
+rimuovendo una turbina.
 
 \subsection{Stima conservativa sulla candidate grid}
 
-Consideriamo una generica candidate location $i$. Se la turbina $i$ viene rimossa da un layout, scompaiono dalla funzione
-obiettivo tutte le interazioni pairwise che la coinvolgono:
-\[
-L_{ij} z_i z_j.
-\]
-In un layout composto da $K=81$ turbine, la turbina $i$ può interagire
-con al massimo altre $K-1=80$ turbine. \newline
+Consideriamo una generica candidate location $i$.
 
-Definiamo quindi $\mathcal{J}^{80}_i$ come l'insieme degli indici
-corrispondenti alle 80 maggiori wake losses presenti nella riga $i$
-della matrice $L$:
+Se la turbina $i$ viene rimossa, scompaiono tutte le interazioni che la
+coinvolgono:
+
 \[
-\mathcal{J}^{80}_i
+L_{ij}z_i z_j.
+\]
+
+In un layout composto da $K$ turbine, la turbina $i$ può interagire con
+al massimo $K-1$ turbine.
+
+Definiamo quindi
+
+\[
+\mathcal J_i^{K-1}
 =
-\operatorname{Top}_{80}
+\operatorname{Top}_{K-1}
 \left\{
 L_{ij}:j\neq i
 \right\}.
 \]
 
+Nel nostro caso,
+
+\[
+K-1=80.
+\]
+
 Una stima conservativa del massimo beneficio ottenibile rimuovendo la
-turbina $i$ è quindi
+turbina $i$ è
 
 \[
 m_i^{\mathrm{grid}}
 =
-\sum_{j\in\mathcal{J}^{80}_i}
+\sum_{j\in\mathcal J_i^{K-1}}
 L_{ij}.
 \]
 
-Questa quantità assume che la turbina $i$ possa essere contemporaneamente
-selezionata insieme alle 80 candidate locations con cui presenta le
-maggiori interazioni di wake. \newline
-Si tratta pertanto di una stima conservativa, poiché tali 80 posizioni
-potrebbero non costituire simultaneamente un layout geometricamente
-feasible.   \newline
+Questa quantità assume che la turbina $i$ sia contemporaneamente
+selezionata con le $K-1$ candidate locations che producono le maggiori
+wake losses.
 
-Iterando il procedimento per ogni candidate location $i$, definiamo
+Iterando il procedimento per ogni $i$ si ottiene
+
 \[
 m_{\max}^{\mathrm{grid}}
 =
@@ -153,7 +219,7 @@ m_{\max}^{\mathrm{grid}}
 m_i^{\mathrm{grid}}.
 \]
 
-Il vincolo di cardinalità viene introdotto tramite
+Il termine di cardinalità è
 
 \[
 H_N(\mathbf z)
@@ -163,20 +229,21 @@ H_N(\mathbf z)
 \sum_i z_i-K
 \right)^2.
 \]
-La rimozione di una sola turbina da un layout con $K$ turbine produce
-una violazione pari a uno:
+
+Rimuovendo una sola turbina:
+
 \[
-(K-1-K)^2 = 1,
+(K-1-K)^2=1,
 \]
 
-e quindi un costo pari a
+quindi la penalità pagata è esattamente
 
 \[
 \lambda_N.
 \]
 
-Per rendere la rimozione di una turbina non conveniente rispetto al
-massimo beneficio stimato, scegliamo
+Per rendere la rimozione non conveniente rispetto al massimo beneficio
+stimato, scegliamo
 
 \[
 \lambda_N
@@ -184,7 +251,8 @@ massimo beneficio stimato, scegliamo
 m_{\max}^{\mathrm{grid}}.
 \]
 
-Introducendo un safety factor $\alpha_N>1$, possiamo definire
+Introducendo un safety factor $\alpha_N>1$:
+
 \[
 \boxed{
 \lambda_N
@@ -197,18 +265,16 @@ m_{\max}^{\mathrm{grid}}
 con, ad esempio,
 
 \[
-\alpha_N \in [1.2,1.8].
+\alpha_N\in[1.2,1.8].
 \]
-Questa procedura produce una stima prudenziale della penalty poiché
-considera un worst-case costruito sull'intero spazio delle candidate
-locations.
+
+Questa stima è prudenziale poiché considera un worst-case costruito
+sull'intero spazio delle candidate locations.
 
 \subsection{Calibrazione mediante una soluzione feasible di riferimento}
 
-La stima precedente può risultare eccessivamente conservativa e produrre
-un valore di $\lambda_N$ molto elevato. Se disponiamo di un layout feasible di riferimento composto esattamente
-da $K=81$ turbine, possiamo utilizzare la sua struttura per ottenere una
-stima più aderente alle configurazioni fisicamente realistiche. \newline
+Se è disponibile un layout feasible di riferimento composto esattamente
+da $K$ turbine, si può ottenere una stima meno conservativa.
 
 Sia
 
@@ -218,16 +284,16 @@ Sia
 \{0,1\}^{N}
 \]
 
-il vettore binario che identifica una soluzione feasible, tale che
+una soluzione feasible tale che
 
 \[
 \sum_i z_i^{\mathrm{ref}}=K.
 \]
 
-Definiamo inoltre l'insieme delle turbine selezionate come
+Definiamo
 
 \[
-\mathcal{S}_{\mathrm{ref}}
+\mathcal S_{\mathrm{ref}}
 =
 \left\{
 i:z_i^{\mathrm{ref}}=1
@@ -237,16 +303,17 @@ i:z_i^{\mathrm{ref}}=1
 con
 
 \[
-|\mathcal{S}_{\mathrm{ref}}|=81.
+|\mathcal S_{\mathrm{ref}}|=K.
 \]
-Per ciascuna turbina $i\in\mathcal{S}_{\mathrm{ref}}$, possiamo calcolare
-la sua wake loss marginale all'interno del layout di riferimento:
+
+Per ciascuna turbina $i\in\mathcal S_{\mathrm{ref}}$, la wake loss
+marginale è
 
 \[
 m_i^{\mathrm{ref}}
 =
 \sum_{\substack{
-j\in\mathcal{S}_{\mathrm{ref}}\\
+j\in\mathcal S_{\mathrm{ref}}\\
 j\neq i
 }}
 L_{ij}.
@@ -258,24 +325,19 @@ Equivalentemente,
 m_i^{\mathrm{ref}}
 =
 \sum_{j\neq i}
-L_{ij}z_j^{\mathrm{ref}},
-\qquad
-i\in\mathcal{S}_{\mathrm{ref}}.
+L_{ij}z_j^{\mathrm{ref}}.
 \]
-In questo caso non è necessario selezionare artificialmente le 80
-maggiori interazioni: sappiamo già quali sono le altre 80 turbine che
-coesistono con $i$ in una configurazione feasible. \newline
 
-La quantità $m_i^{\mathrm{ref}}$ rappresenta quindi esattamente la
-riduzione della pairwise wake-loss objective che si otterrebbe
-rimuovendo la turbina $i$ dal layout di riferimento. \newline
+La quantità $m_i^{\mathrm{ref}}$ rappresenta esattamente la riduzione
+della pairwise wake-loss objective che si otterrebbe rimuovendo la turbina
+$i$ dal layout di riferimento.
 
 Definiamo
 
 \[
 m_{\max}^{\mathrm{ref}}
 =
-\max_{i\in\mathcal{S}_{\mathrm{ref}}}
+\max_{i\in\mathcal S_{\mathrm{ref}}}
 m_i^{\mathrm{ref}}.
 \]
 
@@ -289,163 +351,144 @@ La cardinality penalty viene quindi calibrata come
 m_{\max}^{\mathrm{ref}}
 }
 \]
-con $\alpha_N>1$. \newline
 
-Rispetto alla stima basata sull'intera candidate grid, questa seconda
-strategia è meno conservativa perché utilizza interazioni effettivamente
-presenti in un layout feasible. \newline
+con $\alpha_N>1$.
 
-Di conseguenza, in generale ci aspettiamo
+In generale ci aspettiamo
+
 \[
 m_{\max}^{\mathrm{ref}}
 \leq
 m_{\max}^{\mathrm{grid}},
 \]
-e quindi una cardinality penalty più contenuta. \newline
 
-La soluzione feasible utilizzata come riferimento può essere, ad esempio,
-il baseline fornito dal benchmark oppure una soluzione precedentemente
-ottenuta mediante un solver classico. \newline
+poiché la soluzione di riferimento contiene interazioni effettivamente
+presenti in un layout feasible, mentre la stima grid-based combina
+interazioni worst-case che potrebbero non essere simultaneamente
+realizzabili.
 
-È importante sottolineare che questa seconda procedura costituisce una
-calibrazione empirica e locale: garantisce che la penalty sia superiore
-al massimo beneficio marginale osservato nel layout di riferimento, ma
-non costituisce necessariamente un upper bound globale valido per ogni
-possibile configurazione della candidate grid. \newline
+La soluzione feasible può essere, ad esempio:
 
-Per questo motivo il valore ottenuto rappresenta un valore iniziale
-teoricamente motivato, la cui adeguatezza deve essere successivamente
-verificata mediante una sensitivity analysis, controllando che le
-soluzioni prodotte dal QUBO soddisfino effettivamente
+\begin{itemize}
+    \item il baseline fornito dal benchmark;
+    \item una soluzione ottenuta con OR-Tools;
+    \item una soluzione prodotta da una greedy heuristic;
+    \item un'altra soluzione feasible nota.
+\end{itemize}
 
-\[
-\sum_i z_i=81.
-\]
+Questa seconda procedura è una calibrazione empirica e locale: fornisce
+una stima più rappresentativa di un layout realistico, ma non costituisce
+necessariamente un bound globale valido per ogni configurazione della
+candidate grid.
 
+% ------------------------------------------------------------
 \section{Vincolo sulla distanza minima}
+% ------------------------------------------------------------
 
-Il secondo vincolo impone che due turbine non possano essere installate
-a una distanza inferiore a quella minima prevista dal benchmark. \newline
-
-Definiamo quindi l'insieme delle coppie di candidate locations non
-ammissibili come
+Definiamo l'insieme delle coppie non ammissibili come
 
 \[
-\mathcal{E}_{\mathrm{inv}}
+\mathcal E_{\mathrm{inv}}
 =
 \left\{
 (i,j):
-\|p_i-p_j\| < d_{\min}
-\right\},
+\|p_i-p_j\|<d_{\min}
+\right\}.
 \]
 
-dove, nel nostro caso,
+Nel benchmark considerato,
 
 \[
 d_{\min}=396\text{ m}.
 \]
 
-Il vincolo viene inserito nella funzione QUBO attraverso il termine
+Il termine di penalità è
 
 \[
 H_S(\mathbf z)
 =
 \lambda_S
-\sum_{(i,j)\in\mathcal{E}_{\mathrm{inv}}}
+\sum_{(i,j)\in\mathcal E_{\mathrm{inv}}}
 z_i z_j.
 \]
 
-Per ogni coppia $(i,j)\in\mathcal{E}_{\mathrm{inv}}$, se entrambe le
-candidate locations vengono selezionate,
+Se una coppia non ammissibile viene selezionata, la funzione obiettivo
+riceve una penalità pari a $\lambda_S$.
 
-\[
-z_i=z_j=1,
-\]
-la funzione obiettivo riceve quindi una penalità pari a
+La differenza rispetto alla cardinalità è che non è semplice associare il
+beneficio della violazione alla sola wake loss $L_{ij}$ della coppia
+invalida.
 
-\[
-\lambda_S.
-\]
-
-Anche in questo caso vogliamo scegliere $\lambda_S$ rispondendo alla
-domanda:
-\begin{center}
-\emph{Quanto può essere conveniente violare il vincolo di distanza?}
-\end{center}
-
-La differenza rispetto al vincolo di cardinalità è che non è semplice
-associare il vantaggio di una spacing violation alla sola wake loss
-$L_{ij}$ della coppia non ammissibile. \newline
-
-Consentire una coppia di turbine non feasible può infatti modificare
-l'intera configurazione del layout e permettere al solver di ottenere
-una wake-loss objective complessivamente inferiore. \newline
-
-Per questo motivo la penalty sullo spacing viene confrontata con una
-stima del costo energetico dell'intero layout, anziché con una singola
-interazione pairwise. \newline
+Consentire una coppia non feasible può infatti modificare l'intera
+configurazione del layout e permettere al solver di ottenere una
+wake-loss objective complessivamente inferiore.
 
 \subsection{Stima conservativa sulla candidate grid}
-Consideriamo un layout contenente esattamente $K$ turbine.
-
-La sua wake-loss objective è
-\[
-H_{\mathrm{wake}}(\mathbf z)
-=
-\sum_{i<j}L_{ij}z_i z_j.
-\]
 
 Un layout di $K$ turbine contiene esattamente
+
 \[
 \binom{K}{2}
 \]
-interazioni pairwise. \newline
 
-Nel nostro caso, con $K=81$,
+interazioni pairwise.
+
+Con $K=81$:
+
 \[
 \binom{81}{2}=3240.
 \]
 
-Possiamo quindi costruire una stima conservativa del massimo valore
-raggiungibile dalla wake-loss objective utilizzando l'intera matrice
-$L$. \newline
+Definiamo
 
-Definiamo $\mathcal{L}^{3240}$ come l'insieme delle 3240 maggiori
-wake losses presenti nella parte triangolare superiore della matrice
-$L$:
 \[
-\mathcal{L}^{3240}
+\mathcal L^{\binom{K}{2}}
+=
+\operatorname{Top}_{\binom{K}{2}}
+\left\{
+L_{ij}:i<j
+\right\}.
+\]
+
+Nel caso specifico:
+
+\[
+\mathcal L^{3240}
 =
 \operatorname{Top}_{3240}
 \left\{
-L_{ij}: i<j
+L_{ij}:i<j
 \right\}.
 \]
 
 Definiamo quindi
+
 \[
 E_{\max}^{\mathrm{grid}}
 =
-\sum_{L_{ij}\in\mathcal{L}^{3240}}
+\sum_{L_{ij}\in\mathcal L^{3240}}
 L_{ij}.
 \]
-Questa quantità rappresenta un upper bound conservativo della
-wake-loss objective di un layout composto da 81 turbine. \newline
 
-La stima è conservativa perché le 3240 interazioni selezionate possono
-riferirsi a coppie appartenenti a turbine differenti e potrebbero non
-essere simultaneamente realizzabili all'interno dello stesso layout. \newline
+Questa quantità rappresenta un upper bound conservativo sulla wake-loss
+objective di qualunque configurazione di 81 turbine.
 
-Per essere sicuri che anche una singola violazione del vincolo di
-distanza abbia un costo superiore a questa scala energetica, possiamo
-quindi imporre
+È un bound conservativo perché le 3240 interazioni selezionate
+globalmente potrebbero coinvolgere più di 81 candidate locations e quindi
+non essere simultaneamente realizzabili all'interno di una singola
+configurazione.
+
+Per rendere una singola spacing violation più costosa di tale scala
+energetica si può scegliere
+
 \[
 \lambda_S
 >
 E_{\max}^{\mathrm{grid}}.
 \]
 
-Introducendo un safety factor $\alpha_S>1$, otteniamo
+Con safety factor $\alpha_S>1$:
+
 \[
 \boxed{
 \lambda_S
@@ -456,42 +499,20 @@ E_{\max}^{\mathrm{grid}}
 \]
 
 con, ad esempio,
+
 \[
 \alpha_S\in[1.1,1.5].
 \]
-Una soluzione contenente almeno una coppia non ammissibile avrebbe
-infatti un costo
-\[
-H_S(\mathbf z)\geq\lambda_S.
-\]
 
-Poiché
-\[
-H_{\mathrm{wake}}(\mathbf z)\geq0,
-\]
-
-la sua funzione obiettivo complessiva sarebbe almeno pari a
-\[
-H(\mathbf z)\geq\lambda_S.
-\]
-Questa strategia fornisce quindi una stima molto prudenziale della
-spacing penalty, ma può produrre coefficienti eccessivamente elevati.
+Questa strategia è robusta ma spesso estremamente conservativa.
 
 \subsection{Calibrazione mediante una soluzione feasible di riferimento}
-Se disponiamo di un layout feasible di riferimento, possiamo ottenere
-una stima molto meno conservativa della spacing penalty.
 
-Sia
-\[
-\mathbf z^{\mathrm{ref}}
-\in
-\{0,1\}^{N}
-\]
+Sia $\mathbf z^{\mathrm{ref}}$ una soluzione feasible contenente
+esattamente $K$ turbine e rispettante il vincolo di distanza minima.
 
-una soluzione contenente esattamente $K=81$ turbine e che rispetta il
-vincolo di distanza minima. \newline
+Definiamo la sua pairwise wake-loss objective:
 
-Definiamo la sua pairwise wake-loss objective come
 \[
 E_{\mathrm{ref}}
 =
@@ -503,42 +524,36 @@ z_i^{\mathrm{ref}}
 z_j^{\mathrm{ref}}.
 \]
 
-Equivalentemente, definendo
-\[
-\mathcal{S}_{\mathrm{ref}}
-=
-\left\{
-i:z_i^{\mathrm{ref}}=1
-\right\},
-\]
+Equivalentemente,
 
-possiamo scrivere
 \[
 E_{\mathrm{ref}}
 =
 \sum_{\substack{
 i<j\\
-i,j\in\mathcal{S}_{\mathrm{ref}}
+i,j\in\mathcal S_{\mathrm{ref}}
 }}
 L_{ij}.
 \]
 
-A questo punto scegliamo la spacing penalty in modo che una singola
-violazione del vincolo abbia un costo superiore all'intera wake-loss
-objective della soluzione feasible conosciuta:
+Si sceglie la spacing penalty in modo che una singola violazione abbia
+un costo superiore all'intera wake-loss objective della soluzione
+feasible nota:
+
 \[
 \lambda_S
 >
 E_{\mathrm{ref}}.
 \]
 
-Introducendo un safety factor $\alpha_S>1$, otteniamo
+Introducendo un safety factor $\alpha_S>1$:
 
 \[
 \boxed{
 \lambda_S
 =
-\alpha_S E_{\mathrm{ref}}
+\alpha_S
+E_{\mathrm{ref}}
 }
 \]
 
@@ -548,39 +563,40 @@ con, ad esempio,
 \alpha_S=1.2.
 \]
 
-Il motivo di questa scelta può essere visto direttamente considerando
-una qualsiasi soluzione $\mathbf z^{\mathrm{inf}}$ contenente almeno una
-spacing violation. \newline
+Infatti, per una soluzione infeasible $\mathbf z^{\mathrm{inf}}$ con
+almeno una spacing violation,
 
-Poiché almeno una coppia appartenente a
-$\mathcal{E}_{\mathrm{inv}}$ è selezionata,
 \[
 H_S(\mathbf z^{\mathrm{inf}})
 \geq
 \lambda_S.
 \]
 
-Inoltre, dato che tutte le wake losses sono non negative,
+Poiché
+
 \[
 H_{\mathrm{wake}}(\mathbf z^{\mathrm{inf}})
-\geq0.
+\geq0,
 \]
 
-Di conseguenza,
+segue che
+
 \[
 H(\mathbf z^{\mathrm{inf}})
 \geq
 \lambda_S.
 \]
 
-Se abbiamo scelto
+Se
+
 \[
 \lambda_S
 >
 E_{\mathrm{ref}},
 \]
 
-segue che
+allora
+
 \[
 H(\mathbf z^{\mathrm{inf}})
 >
@@ -589,33 +605,472 @@ E_{\mathrm{ref}}
 H_{\mathrm{wake}}(\mathbf z^{\mathrm{ref}}).
 \]
 
-La soluzione infeasible non può quindi risultare energeticamente
-preferibile alla soluzione feasible di riferimento. \newline
+Quindi una configurazione contenente almeno una spacing violation non può
+battere la soluzione feasible di riferimento.
 
-A differenza della stima costruita sull'intera candidate grid, questa
-seconda strategia utilizza come scala energetica una configurazione che
-sappiamo essere effettivamente realizzabile. \newline
+Anche in questo caso il valore ottenuto può essere sottoposto a
+sensitivity analysis, riducendo progressivamente $\lambda_S$ e
+verificando empiricamente la feasibility delle soluzioni prodotte.
 
-La soluzione di riferimento può essere, ad esempio, il baseline fornito
-dal benchmark oppure un layout feasible precedentemente ottenuto tramite
-un solver classico. \newline
+% ============================================================
+\chapter{Relaxation-based penalty calibration}
+% ============================================================
 
-In particolare, se disponiamo di una soluzione classica con wake losses
-inferiori rispetto al baseline, questa costituisce una reference ancora
-più stringente, poiché permette di utilizzare una spacing penalty più
-contenuta. \newline
+\section{Il problema Big-M}
 
-Come per il vincolo di cardinalità, il valore ottenuto non deve essere
-considerato una costante universale. \newline
+Consideriamo un problema binario quadratico vincolato:
 
-La penalty così determinata rappresenta un valore iniziale teoricamente
-motivato, che può essere successivamente sottoposto a sensitivity
-analysis riducendo progressivamente $\lambda_S$ e verificando che le
-soluzioni ottenute continuino a soddisfare
 \[
-z_i+z_j\leq1
-\qquad
-\forall(i,j)\in\mathcal{E}_{\mathrm{inv}}.
+\min_{\mathbf x\in\{0,1\}^n}
+f(\mathbf x)
+=
+\mathbf x^TQ\mathbf x
 \]
+soggetto a
+\[
+A\mathbf x=\mathbf b.
+\]
+
+Per trasformarlo in un QUBO, il vincolo viene promosso a termine di
+penalità:
+
+\[
+H_M(\mathbf x)
+=
+f(\mathbf x)
++
+M\|A\mathbf x-\mathbf b\|^2.
+\]
+
+Per una soluzione feasible la penalty è nulla. Per una soluzione
+infeasible è positiva. \newline
+
+Il valore $M$ deve quindi essere sufficientemente grande affinché nessuna
+soluzione infeasible possa avere energia inferiore alla soluzione ottima
+feasible. \newline
+
+Una scelta eccessivamente grande di $M$ introduce però il cosiddetto
+\emph{Big-M problem}: la funzione obiettivo viene dominata dalla penalty,
+peggiorando la scala numerica dei coefficienti e, nel contesto quantum e
+quantum-inspired, la scala energetica dell'Hamiltoniana.
+L'obiettivo è quindi scegliere la più piccola penalty che renda la
+riformulazione esatta.
+
+\section{Upper bound da una soluzione feasible}
+Sia
+\[
+\mathbf x_{\mathrm{feas}}
+\]
+una soluzione feasible nota. Il suo valore
+\[
+U
+=
+f(\mathbf x_{\mathrm{feas}})
+\]
+costituisce un upper bound sul valore ottimo del problema vincolato:
+\[
+f(\mathbf x^\star)
+\leq
+U.
+\]
+
+La soluzione feasible può provenire da:
+
+\begin{itemize}
+    \item un solver classico con time limit limitato;
+    \item una greedy heuristic;
+    \item una soluzione benchmark;
+    \item una soluzione precedentemente calcolata.
+\end{itemize}
+
+Più la soluzione feasible è buona, più piccolo sarà $U$ e più stretta
+sarà la penalty ottenuta.
+
+\section{Lower bound della funzione obiettivo}
+Rimuoviamo temporaneamente i vincoli e consideriamo
+\[
+\min_{\mathbf x\in\{0,1\}^n}
+f(\mathbf x).
+\]
+Supponiamo di conoscere un lower bound $L$ tale che
+
+\[
+L
+\leq
+\min_{\mathbf x\in\{0,1\}^n}
+f(\mathbf x).
+\]
+La differenza
+\[
+U-L
+\]
+rappresenta una stima conservativa del massimo vantaggio che una soluzione
+potrebbe ottenere ignorando i vincoli. \newline
+
+Per rendere sconveniente tale vantaggio è sufficiente scegliere
+\[
+M>U-L.
+\]
+
+Introducendo un margine $\delta>0$:
+\[
+\boxed{
+M
+=
+U-L+\delta
+}
+\]
+Il lower bound viene trovata tramite una procedura di \emph{relaxation}.
+Ne esistono diverse, le più importanti sono due: \emph{linear relaxation} e 
+\emph{Semidefinite Programming relaxation}, ci concentriamo su quest'ultima. 
+\[
+\boxed{
+M_{\mathrm{SDP}}
+=
+f(\mathbf x_{\mathrm{feas}})
+-
+f^\star_{\mathrm{SDP}}
++
+\delta
+}
+\]
+
+\section{Teoria della SDP relaxation}
+
+Consideriamo una funzione binaria quadratica generale:
+\[
+f(\mathbf x)
+=
+\mathbf x^TQ\mathbf x
++
+\mathbf L^T\mathbf x,
+\qquad
+\mathbf x\in\{0,1\}^n.
+\]
+L'obiettivo è ottenere un lower bound senza risolvere esattamente il
+problema combinatorio.
+
+\subsection{Lifting}
+
+Definiamo il vettore aumentato
+\[
+\mathbf y
+=
+\begin{pmatrix}
+1\\
+\mathbf x
+\end{pmatrix}
+\]
+e la matrice lifted
+\[
+Y
+=
+\mathbf y\mathbf y^T
+=
+\begin{pmatrix}
+1 & \mathbf x^T\\
+\mathbf x & \mathbf x\mathbf x^T
+\end{pmatrix}.
+\]
+
+La parte in basso a destra contiene direttamente i prodotti pairwise:
+
+\[
+Y_{i+1,j+1}
+=
+x_i x_j.
+\]
+
+Definendo
+\[
+\widetilde Q
+=
+\begin{pmatrix}
+0 & \frac{1}{2}\mathbf L^T\\
+\frac{1}{2}\mathbf L & Q
+\end{pmatrix},
+\]
+la funzione obiettivo può essere riscritta come
+\[
+f(\mathbf x)
+=
+\operatorname{Tr}
+\left(
+Y^T\widetilde Q
+\right).
+\]
+Dopo il lifting, la funzione obiettivo è quindi lineare nella matrice
+$Y$.
+
+\subsection{Formulazione esatta}
+
+Se
+\[
+Y
+=
+\mathbf y\mathbf y^T,
+\]
+
+allora $Y$ soddisfa due proprietà:
+\[
+Y\succeq0
+\]
+
+e
+\[
+\operatorname{rank}(Y)=1.
+\]
+La condizione
+\[
+Y\succeq0
+\]
+significa che $Y$ è positiva semidefinita, cioè
+\[
+\mathbf v^T Y \mathbf v
+\geq0
+\]
+
+per qualsiasi vettore $\mathbf v$.  
+
+Infatti,
+\[
+\mathbf v^TY\mathbf v
+=
+\mathbf v^T\mathbf y\mathbf y^T\mathbf v
+=
+(\mathbf y^T\mathbf v)^2
+\geq0.
+\]
+
+Il vincolo problematico è
+\[
+\operatorname{rank}(Y)=1,
+\]
+
+che rende il problema non convesso.
+
+\subsection{Relaxation}
+
+La SDP relaxation rimuove il vincolo di rango 1 e mantiene la condizione
+semidefinita positiva. Inoltre, poiché per una variabile binaria vale
+\[
+x_i^2=x_i,
+\]
+si impone la relazione lineare
+\[
+Y_{1,i+1}
+=
+Y_{i+1,i+1}.
+\]
+Si aggiungono inoltre bounds del tipo
+\[
+0\leq Y_{ij}\leq1.
+\]
+La relaxation assume quindi la forma
+\[
+\min_Y
+\operatorname{Tr}
+\left(
+Y^T\widetilde Q
+\right)
+\]
+soggetta a
+\[
+Y\succeq0,
+\]
+
+\[
+Y_{1,i+1}
+=
+Y_{i+1,i+1},
+\]
+
+\[
+0\leq Y_{ij}\leq1.
+\]
+
+\section{Perché la SDP fornisce un lower bound}
+Nel problema originale la matrice $Y$ deve necessariamente essere
+generata da un vettore binario e avere rango 1. Nella SDP ammettiamo anche matrici positive semidefinite che non
+corrispondono ad alcuna soluzione binaria reale. \newline
+Abbiamo quindi
+\[
+\mathcal F_{\mathrm{binary}}
+\subseteq
+\mathcal F_{\mathrm{SDP}}.
+\]
+Poiché stiamo minimizzando,
+\[
+\boxed{
+f^\star_{\mathrm{SDP}}
+\leq
+f^\star_{\mathrm{binary}}
+}
+\]
+e il valore ottimo della SDP è quindi un lower bound valido per il
+problema binario originale.
+
+\section{Interpretazione della penalty SDP}
+Una volta disponibili:
+\begin{itemize}
+    \item una soluzione feasible con costo
+    \[
+    U=f(\mathbf x_{\mathrm{feas}});
+    \]
+    \item un lower bound
+    \[
+    f^\star_{\mathrm{SDP}};
+    \]
+\end{itemize}
+
+si definisce
+\[
+\boxed{
+M_{\mathrm{SDP}}
+=
+U
+-
+f^\star_{\mathrm{SDP}}
++
+\delta.
+}
+\]
+
+L'interpretazione è:
+\[
+\underbrace{
+f^\star_{\mathrm{SDP}}
+}_{\text{scenario ottimistico}}
+\qquad
+\longrightarrow
+\qquad
+\underbrace{
+f(\mathbf x_{\mathrm{feas}})
+}_{\text{soluzione feasible nota}}.
+\]
+La differenza tra questi due valori rappresenta una stima conservativa
+del massimo vantaggio che una soluzione potrebbe ottenere ignorando i
+vincoli. \newline
+La SDP viene quindi utilizzata come preprocessing classico per ottenere
+una penalty più stretta, non come solver finale del QUBO.
+
+\section{Workflow relaxation-based}
+
+Il procedimento può essere riassunto come segue:
+
+\begin{enumerate}
+    \item trovare una soluzione feasible $\mathbf x_{\mathrm{feas}}$;
+    \item calcolare
+    \[
+    U=f(\mathbf x_{\mathrm{feas}});
+    \]
+    \item rimuovere temporaneamente i vincoli;
+    \item risolvere la SDP relaxation;
+    \item ottenere
+    \[
+    f^\star_{\mathrm{SDP}};
+    \]
+    \item scegliere
+    \[
+    M_{\mathrm{SDP}}
+    =
+    U-f^\star_{\mathrm{SDP}}+\delta;
+    \]
+    \item costruire il QUBO finale con la penalty ottenuta;
+    \item validare la feasibility con il solver target.
+\end{enumerate}
+
+% ============================================================
+\chapter{Confronto tra i due approcci}
+% ============================================================
+
+Le due strategie rispondono allo stesso obiettivo: ottenere penalty
+sufficientemente grandi da rendere sconveniente la violazione dei
+vincoli, evitando però valori inutilmente elevati.
+
+\section{Problem-based}
+
+L'approccio problem-based sfrutta direttamente:
+
+\begin{itemize}
+    \item la struttura della funzione obiettivo;
+    \item l'interpretazione fisica dei termini;
+    \item informazioni specifiche sul vincolo;
+    \item eventuali soluzioni feasible note.
+\end{itemize}
+
+Vantaggi:
+
+\begin{itemize}
+    \item semplice da interpretare;
+    \item spesso economico computazionalmente;
+    \item può sfruttare fortemente la struttura specifica del problema.
+\end{itemize}
+
+Limiti:
+
+\begin{itemize}
+    \item le formule dipendono dal problema;
+    \item i bound conservativi possono essere molto grandi;
+    \item le versioni basate su una reference solution sono in genere
+    empiriche e locali.
+\end{itemize}
+
+\section{Relaxation-based}
+
+L'approccio SDP costruisce invece una ricetta più generale:
+
+\[
+M_{\mathrm{SDP}}
+=
+U-L+\delta.
+\]
+
+Vantaggi:
+
+\begin{itemize}
+    \item formulazione generica;
+    \item lower bound matematicamente motivato;
+    \item spesso produce valori Big-M più stretti rispetto a bound
+    elementari.
+\end{itemize}
+
+Limiti:
+
+\begin{itemize}
+    \item richiede la soluzione di una SDP;
+    \item la SDP densa può diventare costosa per problemi di grandi
+    dimensioni;
+    \item la qualità della penalty dipende dalla qualità sia
+    dell'upper bound feasible sia del lower bound SDP.
+\end{itemize}
+
+\section{Strategia consigliata}
+
+Una strategia pratica può combinare i due approcci:
+\[
+\boxed{
+\text{problem-based bound}
+\rightarrow
+\text{SDP tightening}
+\rightarrow
+\text{sensitivity analysis}
+\rightarrow
+\text{solver target}
+}
+\]
+Il bound problem-based fornisce una prima scala interpretabile.
+La SDP relaxation consente poi di restringere la penalty in modo più
+sistematico.
+Infine, una sensitivity analysis permette di verificare empiricamente
+che la penalty scelta rimanga sufficientemente robusta sul solver target.
+
+% ============================================================
+\chapter{Riferimenti}
+% ============================================================
+
+E. Alessandroni, S. Ramos-Calderer, I. Roth, E. Traversi e L. Aolita,
+\emph{Alleviating the quantum Big-M problem},
+arXiv:2307.10379v4, 2025.
 
 \end{document}

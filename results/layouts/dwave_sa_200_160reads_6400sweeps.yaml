@@ -5,6 +5,15 @@ metadata:
   grid_resolution: 200
   n_turbines: 81
   time_limit_s: null
+  cached_metrics:
+    n_turbines: 81
+    aep_gwh: 2803.8361237975923
+    wake_loss_pct: 18.647692071726098
+    min_distance_m: 282.842712474619
+    valid_cardinality: true
+    valid_spacing: false
+    valid_boundary: true
+    valid: false
 definitions:
   wind_plant:
     type: object
