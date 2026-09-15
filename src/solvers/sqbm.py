@@ -483,7 +483,7 @@ def solve_wflo_sqbm(
     sqbm_result : SQBMResult
         Risultato grezzo restituito dal server SQBM+.
     """
-    from solvers.dwave import _greedy_repair
+    # from dwave import _greedy_repair
 
     Q = np.asarray(Q, dtype=float)
     n = Q.shape[0]
@@ -531,7 +531,7 @@ def solve_wflo_sqbm(
         print(
             f"Cardinalità {solution.sum()} ≠ {n_turbines}, avvio greedy repair..."
         )
-        solution = _greedy_repair(solution, Q, invalid_pairs, n_turbines)
+        # solution = _greedy_repair(solution, Q, invalid_pairs, n_turbines)
 
     L = np.asarray(wake_loss_matrix, dtype=float)
     sel = np.where(solution == 1)[0]

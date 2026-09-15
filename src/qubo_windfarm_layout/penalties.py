@@ -1,5 +1,7 @@
 import sys
+import scs
 import numpy as np
+import cvxpy as cp
 from scipy.spatial import cKDTree
 
 sys.path.append("..")
@@ -7,8 +9,6 @@ from src.qubo_windfarm_layout.model import compute_aep_from_coords, get_farm_are
 from src.qubo_windfarm_layout.evaluation import load_layout_coordinates
 
  
-
-
 def _compute_reference_wake_matrix(
     layout_path,
 ):
@@ -234,3 +234,122 @@ def compute_lambda_from_lb(
     lambda_ = upper_bound - lower_bound + delta
 
     return lambda_
+
+
+def sdp_fixed_cardinality(
+    wake_loss_matrix,
+    n_turbines=80,
+    max_iters= 20_000
+):
+    L = np.asarray(wake_loss_matrix, dtype=float)
+    Q = L / 2
+
+    n = Q.shape[0]
+
+    x = cp.Variable(n)
+    X = cp.Variable((n, n), symmetric=True)
+
+    Y = cp.bmat([
+        [np.ones((1, 1)), cp.reshape(x, (1, n), order="C")],
+        [cp.reshape(x, (n, 1), order="C"), X],
+    ])
+
+    constraints = [
+        Y >> 0,
+        cp.diag(X) == x,
+        cp.sum(x) == n_turbines,
+        x >= 0,
+        x <= 1,
+        X >= 0,
+        X <= 1,
+    ]
+
+    problem = cp.Problem(
+        cp.Minimize(cp.trace(Q @ X)),
+        constraints,
+    )
+
+    problem.solve(
+        solver=cp.SCS,
+        linear_solver=scs.LinearSolver.CPU_INDIRECT,
+        eps_abs=1e-4,
+        eps_rel=1e-4,
+        max_iters=max_iters,
+        verbose=True,
+    )
+
+    if problem.status not in (
+        cp.OPTIMAL,
+        cp.OPTIMAL_INACCURATE,
+    ):
+        raise RuntimeError(
+            f"SDP failed: {problem.status}"
+        )
+
+    return float(problem.value)
+
+
+def sdp_spacing_violation(
+    wake_loss_matrix,
+    invalid_pairs,
+    n_turbines=81,
+    max_iters= 20_000
+):
+    L = np.asarray(wake_loss_matrix, dtype=float)
+    Q = L / 2
+
+    n = Q.shape[0]
+
+    x = cp.Variable(n)
+    X = cp.Variable((n, n), symmetric=True)
+
+    Y = cp.bmat([
+        [np.ones((1, 1)), cp.reshape(x, (1, n), order="C")],
+        [cp.reshape(x, (n, 1), order="C"), X],
+    ])
+
+    # Almeno una coppia invalida selezionata
+    spacing_violations = cp.sum([
+        X[int(i), int(j)]
+        for i, j in invalid_pairs
+    ])
+
+    constraints = [
+        Y >> 0,
+        cp.diag(X) == x,
+
+        # Numero corretto di turbine
+        cp.sum(x) == n_turbines,
+
+        # Forza almeno una spacing violation
+        spacing_violations >= 1,
+
+        x >= 0,
+        x <= 1,
+        X >= 0,
+        X <= 1,
+    ]
+
+    problem = cp.Problem(
+        cp.Minimize(cp.trace(Q @ X)),
+        constraints,
+    )
+
+    problem.solve(
+        solver=cp.SCS,
+        linear_solver=scs.LinearSolver.CPU_INDIRECT,
+        eps_abs=1e-4,
+        eps_rel=1e-4,
+        max_iters=max_iters,
+        verbose=True,
+    )
+
+    if problem.status not in (
+        cp.OPTIMAL,
+        cp.OPTIMAL_INACCURATE,
+    ):
+        raise RuntimeError(
+            f"SDP failed: {problem.status}"
+        )
+
+    return float(problem.value)
