@@ -239,33 +239,53 @@ def compute_lambda_from_lb(
 def sdp_fixed_cardinality(
     wake_loss_matrix,
     n_turbines=80,
-    max_iters= 20_000
+    max_iters=20_000,
+    strong=True,
 ):
     L = np.asarray(wake_loss_matrix, dtype=float)
-    Q = L / 2
+    n = L.shape[0]
 
-    n = Q.shape[0]
+    # Unica variabile lifted:
+    #
+    # Y = [ 1   x.T ]
+    #     [ x    X  ]
+    #
+    Y = cp.Variable(
+        (n + 1, n + 1),
+        PSD=True,
+    )
 
-    x = cp.Variable(n)
-    X = cp.Variable((n, n), symmetric=True)
-
-    Y = cp.bmat([
-        [np.ones((1, 1)), cp.reshape(x, (1, n), order="C")],
-        [cp.reshape(x, (n, 1), order="C"), X],
-    ])
+    x = Y[0, 1:]
+    X = Y[1:, 1:]
 
     constraints = [
-        Y >> 0,
+        Y[0, 0] == 1,
+
+        # x_i^2 = x_i nella formulazione lifted
         cp.diag(X) == x,
+
+        # cardinalità
         cp.sum(x) == n_turbines,
-        x >= 0,
+
+        # x >= 0 è già implicato dalla PSD
         x <= 1,
-        X >= 0,
-        X <= 1,
     ]
 
+    # Tightening opzionale.
+    # Costa N^2 disuguaglianze.
+    if strong:
+        constraints.append(X >= 0)
+
+    # L è simmetrica:
+    #
+    # 0.5 * sum_ij L_ij X_ij
+    # = sum_{i<j} L_ij X_ij
+    objective = cp.Minimize(
+        0.5 * cp.sum(cp.multiply(L, X))
+    )
+
     problem = cp.Problem(
-        cp.Minimize(cp.trace(Q @ X)),
+        objective,
         constraints,
     )
 
@@ -293,45 +313,57 @@ def sdp_spacing_violation(
     wake_loss_matrix,
     invalid_pairs,
     n_turbines=81,
-    max_iters= 20_000
+    max_iters=20_000,
 ):
     L = np.asarray(wake_loss_matrix, dtype=float)
-    Q = L / 2
+    n = L.shape[0]
 
-    n = Q.shape[0]
+    # Un'unica variabile SDP
+    Y = cp.Variable(
+        (n + 1, n + 1),
+        PSD=True,
+    )
 
-    x = cp.Variable(n)
-    X = cp.Variable((n, n), symmetric=True)
+    x = Y[0, 1:]
+    X = Y[1:, 1:]
 
-    Y = cp.bmat([
-        [np.ones((1, 1)), cp.reshape(x, (1, n), order="C")],
-        [cp.reshape(x, (n, 1), order="C"), X],
-    ])
+    # Vectorizzazione invalid pairs
+    invalid_pairs = np.asarray(invalid_pairs, dtype=int)
 
-    # Almeno una coppia invalida selezionata
-    spacing_violations = cp.sum([
-        X[int(i), int(j)]
-        for i, j in invalid_pairs
-    ])
+    ii = invalid_pairs[:, 0]
+    jj = invalid_pairs[:, 1]
 
     constraints = [
-        Y >> 0,
+        Y[0, 0] == 1,
+
+        # x_i^2 = x_i
         cp.diag(X) == x,
 
-        # Numero corretto di turbine
+        # 81 turbine
         cp.sum(x) == n_turbines,
 
-        # Forza almeno una spacing violation
-        spacing_violations >= 1,
-
-        x >= 0,
+        # x_i <= 1
+        # x_i >= 0 è già implicato da PSD + diag(X)=x
         x <= 1,
+
+        # almeno una spacing violation
+        cp.sum(X[ii, jj]) >= 1,
+
+        # Manteniamo non-negatività di X
+        # È importante per avere un bound più stretto
         X >= 0,
-        X <= 1,
     ]
 
+    # Non creiamo Q = L/2:
+    # 0.5 * <L,X> = sum_{i<j} L_ij X_ij
+    objective = cp.Minimize(
+        0.5 * cp.sum(
+            cp.multiply(L, X)
+        )
+    )
+
     problem = cp.Problem(
-        cp.Minimize(cp.trace(Q @ X)),
+        objective,
         constraints,
     )
 
@@ -399,7 +431,6 @@ def get_penalties(grid_resolution, max_iters):
     )
 
     # Step 3: compute lambda
-    z_reference = layout_yaml_to_z(yaml_path=REFERENCE_LAYOUT)[0]
     wake_loss_up = load_wake_loss_data(REFERENCE_WAKE_MATRIX)
     wake_loss_matrix_up = wake_loss_up["wake_loss_matrix"]
 
