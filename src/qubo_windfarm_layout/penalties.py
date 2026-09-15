@@ -353,3 +353,69 @@ def sdp_spacing_violation(
         )
 
     return float(problem.value)
+
+
+def get_penalties(grid_resolution, max_iters):
+
+    # Setup
+    REFERENCE_LAYOUT = f"../results/layouts/cpsat_200_3600s.yaml"
+    REFERENCE_WAKE_MATRIX = f"../results/precomputed/wake_loss_200m.npz"
+    MIN_DISTANCE = 396  # 2 * 198 m
+
+    _, farm_area = get_farm_area()
+    X_grid, Y_grid, mask = get_mask(farm_area=farm_area, grid_resolution=grid_resolution)
+    candidate_locations = np.column_stack([X_grid[mask], Y_grid[mask]])
+
+    invalid_pairs = get_invalid_pairs(
+    candidate_locations=candidate_locations,
+    min_distance=MIN_DISTANCE,
+    )
+    print(f"Candidati totali : {len(candidate_locations)}")
+    print(f"Coppie non valide: {len(invalid_pairs)}")
+
+    # Step 1: retrieve upper bound feasible solution
+    z_reference_up, candidate_locations = layout_yaml_to_z(
+    yaml_path=REFERENCE_LAYOUT
+    )
+
+    print(f"Candidati totali   : {len(candidate_locations)}")
+    print(f"Turbine selezionate: {z_reference_up.sum()}")
+
+    # Step 2: compute lower bound using a relaxed solution
+    wake_loss = load_wake_loss_data(f"../results/precomputed/wake_loss_{grid_resolution}m.npz")
+    wake_loss_matrix = wake_loss["wake_loss_matrix"]
+
+    LB_cardinality = sdp_fixed_cardinality(
+    wake_loss_matrix,
+    n_turbines=80,
+    max_iters=max_iters
+    )
+
+    LB_spacing = sdp_spacing_violation(
+    wake_loss_matrix,
+    invalid_pairs,
+    n_turbines=81,
+    max_iters=max_iters
+    )
+
+    # Step 3: compute lambda
+    z_reference = layout_yaml_to_z(yaml_path=REFERENCE_LAYOUT)[0]
+    wake_loss_up = load_wake_loss_data(REFERENCE_WAKE_MATRIX)
+    wake_loss_matrix_up = wake_loss_up["wake_loss_matrix"]
+
+    lambda_cardinality = compute_lambda_from_lb(wake_loss_matrix=wake_loss_matrix_up, z_reference=z_reference_up, lower_bound=LB_cardinality)
+    lambda_spacing = compute_lambda_from_lb(wake_loss_matrix=wake_loss_matrix_up, z_reference=z_reference_up, lower_bound=LB_spacing)
+    print(f"Lambda cardinality = {lambda_cardinality}")
+    print(f"Lambda spacing = {lambda_spacing}")
+
+    return lambda_cardinality, lambda_spacing
+
+if __name__ == "__main__":
+    from src.solvers.utils import get_invalid_pairs
+    from src.qubo_windfarm_layout.evaluation import load_layout_coordinates
+    from src.qubo_windfarm_layout.model import get_farm_area, get_mask, load_wake_loss_data
+    
+    MAX_ITERS = 500
+    GRID_RESOLUTION = 300
+    
+    get_penalties(grid_resolution=GRID_RESOLUTION, max_iters=MAX_ITERS)
