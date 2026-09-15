@@ -1,9 +1,12 @@
 import sys
 import numpy as np
+from scipy.spatial import cKDTree
 
 sys.path.append("..")
-from src.qubo_windfarm_layout.model import compute_aep_from_coords
+from src.qubo_windfarm_layout.model import compute_aep_from_coords, get_farm_area, get_mask
 from src.qubo_windfarm_layout.evaluation import load_layout_coordinates
+
+ 
 
 
 def _compute_reference_wake_matrix(
@@ -59,6 +62,7 @@ def _compute_reference_wake_matrix(
             L_ref[j, i] = loss
 
     return locations, L_ref, A0
+
 
 def suggest_cardinality_penalty_from_layout(
     layout_path,
@@ -167,3 +171,66 @@ def suggest_spacing_penalty_from_layout(
     )
 
     return lambda_spacing
+
+
+def layout_yaml_to_z(yaml_path, grid_resolution=200, tol=1.0):
+    """
+    Ricostruisce il vettore binario z dalla griglia candidati e un layout YAML.
+
+    Parameters
+    ----------
+    yaml_path : str | Path
+        Path al file YAML del layout salvato.
+    grid_resolution : int
+        Risoluzione della griglia in metri (deve coincidere con quella usata
+        quando il layout è stato generato).
+    tol : float
+        Tolleranza in metri per il matching posizione → candidato.
+
+    Returns
+    -------
+    z : np.ndarray, shape (n_candidates,), dtype int
+        Vettore binario: z[i] = 1 se il candidato i è selezionato.
+    candidate_locations : np.ndarray, shape (n_candidates, 2)
+        Griglia completa dei candidati nello stesso ordine di z.
+    """
+    _, farm_area = get_farm_area()
+    X, Y, mask = get_mask(farm_area=farm_area, grid_resolution=grid_resolution)
+    candidate_locations = np.column_stack([X[mask], Y[mask]])
+
+    selected = load_layout_coordinates(yaml_path)
+
+    tree = cKDTree(candidate_locations)
+    dists, indices = tree.query(selected, k=1)
+
+    if np.any(dists > tol):
+        bad = np.where(dists > tol)[0]
+        raise ValueError(
+            f"{len(bad)} posizioni del YAML non trovate nella griglia "
+            f"(distanza max = {dists.max():.2f} m > tol={tol} m). "
+            "Verifica che grid_resolution coincida con quella usata dal solver."
+        )
+
+    z = np.zeros(len(candidate_locations), dtype=int)
+    z[indices] = 1
+    return z, candidate_locations
+
+
+def compute_lambda_from_lb(
+    wake_loss_matrix,
+    z_reference,
+    lower_bound,
+    delta=1e-6,
+):
+    L = np.asarray(wake_loss_matrix, dtype=float)
+    x = np.asarray(z_reference, dtype=float)
+
+    # H_wake = sum_{i<j} L_ij x_i x_j
+    # L è simmetrica, quindi dividiamo per 2
+    Q = L / 2
+
+    upper_bound = float(x @ Q @ x)
+
+    lambda_ = upper_bound - lower_bound + delta
+
+    return lambda_
