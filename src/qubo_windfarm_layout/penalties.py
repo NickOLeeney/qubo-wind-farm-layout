@@ -230,7 +230,7 @@ def compute_lambda_from_lb(
     Q = L / 2
 
     upper_bound = float(x @ Q @ x)
-
+    print(f"Upper Bound: {upper_bound}")
     lambda_ = upper_bound - lower_bound + delta
 
     return lambda_
@@ -318,7 +318,9 @@ def sdp_spacing_violation(
     L = np.asarray(wake_loss_matrix, dtype=float)
     n = L.shape[0]
 
-    # Un'unica variabile SDP
+    scale = np.max(np.abs(L))
+    L_scaled = L / scale
+
     Y = cp.Variable(
         (n + 1, n + 1),
         PSD=True,
@@ -327,43 +329,30 @@ def sdp_spacing_violation(
     x = Y[0, 1:]
     X = Y[1:, 1:]
 
-    # Vectorizzazione invalid pairs
-    invalid_pairs = np.asarray(invalid_pairs, dtype=int)
+    invalid_pairs = np.asarray(
+        invalid_pairs,
+        dtype=int,
+    )
 
     ii = invalid_pairs[:, 0]
     jj = invalid_pairs[:, 1]
 
     constraints = [
         Y[0, 0] == 1,
-
-        # x_i^2 = x_i
         cp.diag(X) == x,
-
-        # 81 turbine
         cp.sum(x) == n_turbines,
-
-        # x_i <= 1
-        # x_i >= 0 è già implicato da PSD + diag(X)=x
         x <= 1,
-
-        # almeno una spacing violation
-        cp.sum(X[ii, jj]) >= 1,
-
-        # Manteniamo non-negatività di X
-        # È importante per avere un bound più stretto
         X >= 0,
+
+        cp.sum(X[ii, jj]) >= 1,
     ]
 
-    # Non creiamo Q = L/2:
-    # 0.5 * <L,X> = sum_{i<j} L_ij X_ij
-    objective = cp.Minimize(
-        0.5 * cp.sum(
-            cp.multiply(L, X)
-        )
-    )
-
     problem = cp.Problem(
-        objective,
+        cp.Minimize(
+            0.5 * cp.sum(
+                cp.multiply(L_scaled, X)
+            )
+        ),
         constraints,
     )
 
@@ -384,10 +373,10 @@ def sdp_spacing_violation(
             f"SDP failed: {problem.status}"
         )
 
-    return float(problem.value)
+    return float(problem.value * scale)
 
 
-def get_penalties(grid_resolution, max_iters):
+def get_penalties(grid_resolution, max_iters, penalty_type):
 
     # Setup
     REFERENCE_LAYOUT = f"../results/layouts/cpsat_200_3600s.yaml"
@@ -417,29 +406,31 @@ def get_penalties(grid_resolution, max_iters):
     wake_loss = load_wake_loss_data(f"../results/precomputed/wake_loss_{grid_resolution}m.npz")
     wake_loss_matrix = wake_loss["wake_loss_matrix"]
 
-    LB_cardinality = sdp_fixed_cardinality(
-    wake_loss_matrix,
-    n_turbines=80,
-    max_iters=max_iters
-    )
+    if penalty_type == "cardinality":
+        LB = sdp_fixed_cardinality(
+        wake_loss_matrix,
+        n_turbines=80,
+        max_iters=max_iters
+        )
+    elif penalty_type == "spacing":
+        LB = sdp_spacing_violation(
+        wake_loss_matrix,
+        invalid_pairs,
+        n_turbines=81,
+        max_iters=max_iters
+        )
 
-    LB_spacing = sdp_spacing_violation(
-    wake_loss_matrix,
-    invalid_pairs,
-    n_turbines=81,
-    max_iters=max_iters
-    )
+    print(f"LB {penalty_type} = {LB}")
 
     # Step 3: compute lambda
     wake_loss_up = load_wake_loss_data(REFERENCE_WAKE_MATRIX)
     wake_loss_matrix_up = wake_loss_up["wake_loss_matrix"]
 
-    lambda_cardinality = compute_lambda_from_lb(wake_loss_matrix=wake_loss_matrix_up, z_reference=z_reference_up, lower_bound=LB_cardinality)
-    lambda_spacing = compute_lambda_from_lb(wake_loss_matrix=wake_loss_matrix_up, z_reference=z_reference_up, lower_bound=LB_spacing)
-    print(f"Lambda cardinality = {lambda_cardinality}")
-    print(f"Lambda spacing = {lambda_spacing}")
+    _lambda = compute_lambda_from_lb(wake_loss_matrix=wake_loss_matrix_up, z_reference=z_reference_up, lower_bound=LB)
 
-    return lambda_cardinality, lambda_spacing
+    print(f"Lambda {penalty_type} = {_lambda}")
+
+    return _lambda
 
 if __name__ == "__main__":
     import argparse
@@ -460,6 +451,15 @@ if __name__ == "__main__":
         default=300,
         help="Grid resolution in metres (default: 300).",
     )
+    
+    parser.add_argument(
+            "--penalty-type",
+            type=str,
+            choices=["cardinality", "spacing"],
+            required=True,
+            help="Penalty type to compute",
+        )
+    
     args = parser.parse_args()
 
-    get_penalties(grid_resolution=args.grid_resolution, max_iters=args.max_iters)
+    get_penalties(grid_resolution=args.grid_resolution, max_iters=args.max_iters, penalty_type=args.penalty_type)
