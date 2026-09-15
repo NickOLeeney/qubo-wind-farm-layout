@@ -411,11 +411,24 @@ def get_penalties(grid_resolution, max_iters):
     return lambda_cardinality, lambda_spacing
 
 if __name__ == "__main__":
+    import argparse
     from src.solvers.utils import get_invalid_pairs
     from src.qubo_windfarm_layout.evaluation import load_layout_coordinates
     from src.qubo_windfarm_layout.model import get_farm_area, get_mask, load_wake_loss_data
-    
-    MAX_ITERS = 500
-    GRID_RESOLUTION = 300
-    
-    get_penalties(grid_resolution=GRID_RESOLUTION, max_iters=MAX_ITERS)
+
+    parser = argparse.ArgumentParser(description="Compute QUBO penalty coefficients.")
+    parser.add_argument(
+        "--max-iters",
+        type=int,
+        default=1000,
+        help="Maximum SDP solver iterations (default: 1000).",
+    )
+    parser.add_argument(
+        "--grid-resolution",
+        type=int,
+        default=300,
+        help="Grid resolution in metres (default: 300).",
+    )
+    args = parser.parse_args()
+
+    get_penalties(grid_resolution=args.grid_resolution, max_iters=args.max_iters)
