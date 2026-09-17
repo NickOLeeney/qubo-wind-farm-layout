@@ -173,7 +173,7 @@ def suggest_spacing_penalty_from_layout(
     return lambda_spacing
 
 
-def layout_yaml_to_z(yaml_path, grid_resolution=200, tol=1.0):
+def layout_yaml_to_z(yaml_path, grid_resolution, tol=1.0):
     """
     Ricostruisce il vettore binario z dalla griglia candidati e un layout YAML.
 
