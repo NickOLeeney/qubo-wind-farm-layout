@@ -376,7 +376,7 @@ def sdp_spacing_violation(
     return float(problem.value * scale)
 
 
-def get_penalties(grid_resolution, max_iters, penalty_type):
+def get_penalties(grid_resolution, max_iters, penalty_type, save_memory):
 
     # Setup
     REFERENCE_LAYOUT = f"../results/layouts/cpsat_200_3600s.yaml"
@@ -451,7 +451,6 @@ if __name__ == "__main__":
         required=True,
         help="Grid resolution in metres (default: 300).",
     )
-    
     parser.add_argument(
             "--penalty-type",
             type=str,
@@ -459,7 +458,16 @@ if __name__ == "__main__":
             required=True,
             help="Penalty type to compute",
         )
+
+    parser.add_argument(
+                "--save-memory",
+                type=bool,
+                choices=[True, False],
+                required=True,
+                default=True,
+                help="Decide matrix quantization",
+            )
     
     args = parser.parse_args()
 
-    get_penalties(grid_resolution=args.grid_resolution, max_iters=args.max_iters, penalty_type=args.penalty_type)
+    get_penalties(grid_resolution=args.grid_resolution, max_iters=args.max_iters, penalty_type=args.penalty_type, save_memory=args.save_memory)

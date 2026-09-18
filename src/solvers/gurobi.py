@@ -8,7 +8,8 @@ from dotenv import load_dotenv
 
 import sys
 sys.path.append("..")
-from src.common import safe_cast_uint16, print_ram, upper_triangular_csr
+from src.common.utils import safe_cast_uint16, print_ram, upper_triangular_csr
+
 load_dotenv()
 
 env = gp.Env(
@@ -190,7 +191,7 @@ def solve_wflo_gurobi(
 if __name__ == "__main__":
     import sys
     import argparse
-
+    sys.path.append("..")
     
     from src.qubo_windfarm_layout.model import load_wake_loss_data, get_farm_area, get_mask
     from src.solvers.utils import get_invalid_pairs, save_benchmark_layout
