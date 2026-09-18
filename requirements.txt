@@ -14,6 +14,7 @@ dimod==0.12.22
 dwave-samplers==1.8.0
 executing==2.2.1
 fonttools==4.64.0
+gurobipy==13.0.3
 h5py==3.16.0
 highspy==1.15.1
 idna==3.19
@@ -51,6 +52,7 @@ pycparser==3.0
 Pygments==2.21.0
 pyparsing==3.3.2
 python-dateutil==2.9.0.post0
+python-dotenv==1.2.3
 PyYAML==6.0.3
 pyzmq==27.2.0
 qdldl==0.1.9.post1
