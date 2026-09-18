@@ -6,6 +6,9 @@ import scipy.sparse as sp
 from gurobipy import GRB
 from dotenv import load_dotenv
 
+import sys
+sys.path.append("..")
+from src.common import safe_cast_uint16, print_ram, upper_triangular_csr
 load_dotenv()
 
 env = gp.Env(
@@ -26,14 +29,14 @@ def solve_wflo_gurobi(
     mip_gap=1e-3,
     verbose=True,
 ):
-    L = np.asarray(wake_loss_matrix, dtype=float)
+    L = wake_loss_matrix
 
     if L.ndim != 2 or L.shape[0] != L.shape[1]:
         raise ValueError("wake_loss_matrix deve essere quadrata.")
 
     n = L.shape[0]
 
-    invalid_pairs = np.asarray(invalid_pairs, dtype=int)
+    invalid_pairs = np.asarray(invalid_pairs, dtype=np.int32)
 
     model = gp.Model("wflo", env=env)
 
@@ -90,10 +93,8 @@ def solve_wflo_gurobi(
     #
     # H_wake = sum_{i<j} L_ij z_i z_j
     # --------------------------------------------------
-
-    Q = sp.csr_matrix(
-        np.triu(L, k=1)
-    )
+    Q = upper_triangular_csr(L)
+ 
 
     model.setObjective(
         z @ Q @ z,
@@ -120,7 +121,7 @@ def solve_wflo_gurobi(
         m = len(invalid_pairs)
 
         rows = np.repeat(
-            np.arange(m),
+            np.arange(m, dtype=np.int32),
             2,
         )
 
@@ -144,11 +145,18 @@ def solve_wflo_gurobi(
             name="spacing",
         )
 
+        del rows, cols, data, A_spacing
+
     # --------------------------------------------------
     # Solve
     # --------------------------------------------------
-
+    print("RAM before model.optimize()")
+    print_ram()
+    del wake_loss_matrix, invalid_pairs, Q
+    gc.collect()
+    print("RAM after model.optimize()")
     model.optimize()
+
 
     if model.SolCount == 0:
         raise RuntimeError(
@@ -183,9 +191,10 @@ if __name__ == "__main__":
     import sys
     import argparse
 
-    sys.path.append("..")
+    
     from src.qubo_windfarm_layout.model import load_wake_loss_data, get_farm_area, get_mask
     from src.solvers.utils import get_invalid_pairs, save_benchmark_layout
+    
 
     MIN_DISTANCE = 396
     WARMSTART = None
@@ -207,8 +216,17 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Get Wake Loss Matrix
-    wake_loss = load_wake_loss_data(f"../results/precomputed/wake_loss_{args.grid_resolution}m.npz")
-    wake_loss_matrix = wake_loss["wake_loss_matrix"]
+    wake_loss = load_wake_loss_data(
+        f"../results/precomputed/wake_loss_{args.grid_resolution}m.npz"
+    )
+
+    print(f"Before optimization")
+    print_ram()
+
+    # Quantizzazione 
+    wake_loss_matrix = safe_cast_uint16(
+        wake_loss.pop("wake_loss_matrix")
+    )
 
     # Get candidates
     polygons, farm_area = get_farm_area()
@@ -221,6 +239,15 @@ if __name__ == "__main__":
 
     # Get invalid pairs
     invalid_pairs = get_invalid_pairs(candidate_locations=candidate_locations, min_distance=MIN_DISTANCE)
+
+    # Libera RAM
+    del wake_loss, polygons, farm_area, X, Y, mask
+    import gc
+    gc.collect()
+    
+
+    print(f"After optimization")
+    print_ram()
 
     result = solve_wflo_gurobi(
         wake_loss_matrix=wake_loss_matrix,

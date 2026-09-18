@@ -396,7 +396,7 @@ def get_penalties(grid_resolution, max_iters, penalty_type):
 
     # Step 1: retrieve upper bound feasible solution
     z_reference_up, candidate_locations = layout_yaml_to_z(
-    yaml_path=REFERENCE_LAYOUT
+    yaml_path=REFERENCE_LAYOUT, grid_resolution=grid_resolution
     )
 
     print(f"Candidati totali   : {len(candidate_locations)}")
@@ -442,13 +442,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max-iters",
         type=int,
-        default=1000,
+        required=True,
         help="Maximum SDP solver iterations (default: 1000).",
     )
     parser.add_argument(
         "--grid-resolution",
         type=int,
-        default=300,
+        required=True,
         help="Grid resolution in metres (default: 300).",
     )
     
