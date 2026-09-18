@@ -1,14 +1,38 @@
+import gc
 import sys
 import scs
 import numpy as np
 import cvxpy as cp
+
 from scipy.spatial import cKDTree
 
 sys.path.append("..")
-from src.qubo_windfarm_layout.model import compute_aep_from_coords, get_farm_area, get_mask
-from src.qubo_windfarm_layout.evaluation import load_layout_coordinates
 
- 
+from src.qubo_windfarm_layout.model import (
+    compute_aep_from_coords,
+    get_farm_area,
+    get_mask,
+    load_wake_loss_data,
+)
+
+from src.qubo_windfarm_layout.evaluation import (
+    load_layout_coordinates,
+)
+
+from src.solvers.utils import (
+    get_invalid_pairs,
+)
+
+from src.common.utils import (
+    safe_cast_uint16,
+    print_ram,
+)
+
+
+# ============================================================
+# Reference-layout methods
+# ============================================================
+
 def _compute_reference_wake_matrix(
     layout_path,
 ):
@@ -16,11 +40,6 @@ def _compute_reference_wake_matrix(
     Costruisce la pairwise wake-loss matrix L_ref
     per un qualsiasi layout YAML compatibile con
     il formato benchmark.
-
-    Può essere:
-      - base.yaml
-      - ortools_200m.yaml
-      - qualsiasi altro layout salvato nello stesso formato
     """
 
     locations = load_layout_coordinates(
@@ -69,15 +88,12 @@ def suggest_cardinality_penalty_from_layout(
     safety_factor=1.5,
 ):
     """
-    Stima lambda_cardinality da un qualsiasi layout
-    YAML di riferimento.
-
     lambda_N =
         safety_factor *
         max_i sum_{j != i} L_ij
     """
 
-    locations, L_ref, A0 = (
+    locations, L_ref, _ = (
         _compute_reference_wake_matrix(
             layout_path
         )
@@ -123,22 +139,19 @@ def suggest_spacing_penalty_from_layout(
     safety_factor=1.2,
 ):
     """
-    Stima lambda_spacing da un qualsiasi layout
-    YAML di riferimento.
-
     lambda_S =
         safety_factor *
         sum_{i<j} L_ij
     """
 
-    locations, L_ref, A0 = (
+    locations, L_ref, _ = (
         _compute_reference_wake_matrix(
             layout_path
         )
     )
 
-    # L_ref è simmetrica:
-    # prendiamo solo la parte triangolare superiore.
+    # Matrice piccola (81x81), quindi qui np.triu
+    # non è un problema di memoria.
     reference_wake_objective = float(
         np.triu(
             L_ref,
@@ -173,47 +186,101 @@ def suggest_spacing_penalty_from_layout(
     return lambda_spacing
 
 
-def layout_yaml_to_z(yaml_path, grid_resolution, tol=1.0):
+# ============================================================
+# Layout -> binary vector
+# ============================================================
+
+def layout_yaml_to_z(
+    yaml_path,
+    candidate_locations,
+    tol=1.0,
+):
     """
-    Ricostruisce il vettore binario z dalla griglia candidati e un layout YAML.
+    Ricostruisce il vettore binario z dato un layout YAML
+    e la griglia candidati già calcolata.
 
-    Parameters
-    ----------
-    yaml_path : str | Path
-        Path al file YAML del layout salvato.
-    grid_resolution : int
-        Risoluzione della griglia in metri (deve coincidere con quella usata
-        quando il layout è stato generato).
-    tol : float
-        Tolleranza in metri per il matching posizione → candidato.
-
-    Returns
-    -------
-    z : np.ndarray, shape (n_candidates,), dtype int
-        Vettore binario: z[i] = 1 se il candidato i è selezionato.
-    candidate_locations : np.ndarray, shape (n_candidates, 2)
-        Griglia completa dei candidati nello stesso ordine di z.
+    Questo evita di ricostruire farm_area, X, Y e mask
+    una seconda volta.
     """
-    _, farm_area = get_farm_area()
-    X, Y, mask = get_mask(farm_area=farm_area, grid_resolution=grid_resolution)
-    candidate_locations = np.column_stack([X[mask], Y[mask]])
 
-    selected = load_layout_coordinates(yaml_path)
+    selected = np.asarray(
+        load_layout_coordinates(yaml_path),
+        dtype=float,
+    )
 
-    tree = cKDTree(candidate_locations)
-    dists, indices = tree.query(selected, k=1)
+    tree = cKDTree(
+        candidate_locations
+    )
+
+    dists, indices = tree.query(
+        selected,
+        k=1,
+    )
 
     if np.any(dists > tol):
-        bad = np.where(dists > tol)[0]
+
+        bad = np.where(
+            dists > tol
+        )[0]
+
         raise ValueError(
-            f"{len(bad)} posizioni del YAML non trovate nella griglia "
-            f"(distanza max = {dists.max():.2f} m > tol={tol} m). "
-            "Verifica che grid_resolution coincida con quella usata dal solver."
+            f"{len(bad)} posizioni del YAML non trovate "
+            f"nella griglia "
+            f"(distanza max = {dists.max():.2f} m "
+            f"> tol={tol} m). "
+            "Il reference layout deve essere compatibile "
+            "con la grid resolution corrente."
         )
 
-    z = np.zeros(len(candidate_locations), dtype=int)
+    # uint8 è più che sufficiente per un vettore binario
+    z = np.zeros(
+        len(candidate_locations),
+        dtype=np.uint8,
+    )
+
     z[indices] = 1
-    return z, candidate_locations
+
+    return z
+
+
+# ============================================================
+# Upper bound
+# ============================================================
+
+def compute_upper_bound(
+    wake_loss_matrix,
+    z_reference,
+):
+    """
+    H_wake = 0.5 * z^T L z
+
+    Per risparmiare memoria viene estratta solamente
+    la sott matrice relativa alle turbine selezionate.
+    """
+
+    L = np.asarray(
+        wake_loss_matrix
+    )
+
+    selected = np.flatnonzero(
+        z_reference
+    )
+
+    L_selected = L[
+        np.ix_(
+            selected,
+            selected,
+        )
+    ]
+
+    upper_bound = float(
+        0.5
+        * L_selected.sum(
+            dtype=np.float64
+        )
+    )
+
+    return upper_bound
 
 
 def compute_lambda_from_lb(
@@ -222,19 +289,32 @@ def compute_lambda_from_lb(
     lower_bound,
     delta=1e-6,
 ):
-    L = np.asarray(wake_loss_matrix, dtype=float)
-    x = np.asarray(z_reference, dtype=float)
+    """
+    Mantiene la funzione per compatibilità con
+    eventuale altro codice.
+    """
 
-    # H_wake = sum_{i<j} L_ij x_i x_j
-    # L è simmetrica, quindi dividiamo per 2
-    Q = L / 2
+    upper_bound = compute_upper_bound(
+        wake_loss_matrix,
+        z_reference,
+    )
 
-    upper_bound = float(x @ Q @ x)
-    print(f"Upper Bound: {upper_bound}")
-    lambda_ = upper_bound - lower_bound + delta
+    print(
+        f"Upper Bound: {upper_bound}"
+    )
+
+    lambda_ = (
+        upper_bound
+        - lower_bound
+        + delta
+    )
 
     return lambda_
 
+
+# ============================================================
+# SDP - Cardinality violation
+# ============================================================
 
 def sdp_fixed_cardinality(
     wake_loss_matrix,
@@ -242,46 +322,101 @@ def sdp_fixed_cardinality(
     max_iters=20_000,
     strong=True,
 ):
-    L = np.asarray(wake_loss_matrix, dtype=float)
+    """
+    SDP relaxation con cardinalità fissata.
+
+    strong=True:
+        aggiunge X >= 0.
+        Relaxation più forte ma maggiore consumo RAM.
+
+    strong=False:
+        relaxation più leggera e scalabile.
+    """
+
+    L = np.asarray(
+        wake_loss_matrix
+    )
+
     n = L.shape[0]
 
-    # Unica variabile lifted:
+    if L.ndim != 2 or L.shape[1] != n:
+        raise ValueError(
+            "wake_loss_matrix deve essere quadrata."
+        )
+
+    scale = float(
+        L.max()
+    )
+
+    if scale <= 0:
+        raise ValueError(
+            "Wake-loss matrix non valida: max <= 0."
+        )
+
+    # --------------------------------------------------
+    # Lifted PSD variable
     #
-    # Y = [ 1   x.T ]
-    #     [ x    X  ]
-    #
+    # Y = [1   x.T]
+    #     [x    X ]
+    # --------------------------------------------------
+
     Y = cp.Variable(
         (n + 1, n + 1),
         PSD=True,
     )
 
-    x = Y[0, 1:]
-    X = Y[1:, 1:]
+    x = Y[
+        0,
+        1:
+    ]
+
+    X = Y[
+        1:,
+        1:
+    ]
 
     constraints = [
         Y[0, 0] == 1,
 
-        # x_i^2 = x_i nella formulazione lifted
+        # binary lifting
         cp.diag(X) == x,
 
-        # cardinalità
+        # fixed cardinality
         cp.sum(x) == n_turbines,
 
-        # x >= 0 è già implicato dalla PSD
+        # x >= 0 already implied by PSD + diag(X)=x
         x <= 1,
     ]
 
-    # Tightening opzionale.
-    # Costa N^2 disuguaglianze.
+    # Optional tightening.
+    # Costs O(N^2) scalar inequalities.
     if strong:
-        constraints.append(X >= 0)
+        constraints.append(
+            X >= 0
+        )
 
-    # L è simmetrica:
+    # --------------------------------------------------
+    # Objective
     #
-    # 0.5 * sum_ij L_ij X_ij
-    # = sum_{i<j} L_ij X_ij
+    # Instead of:
+    #
+    # L_scaled = L / scale
+    #
+    # use:
+    #
+    # (1 / scale) * objective(L)
+    #
+    # to avoid allocating another NxN matrix.
+    # --------------------------------------------------
+
     objective = cp.Minimize(
-        0.5 * cp.sum(cp.multiply(L, X))
+        (0.5 / scale)
+        * cp.sum(
+            cp.multiply(
+                L,
+                X,
+            )
+        )
     )
 
     problem = cp.Problem(
@@ -289,6 +424,13 @@ def sdp_fixed_cardinality(
         constraints,
     )
 
+    gc.collect()
+
+    print(
+        "RAM before cardinality SDP:"
+    )
+    print_ram()
+
     problem.solve(
         solver=cp.SCS,
         linear_solver=scs.LinearSolver.CPU_INDIRECT,
@@ -298,6 +440,11 @@ def sdp_fixed_cardinality(
         verbose=True,
     )
 
+    print(
+        "RAM after cardinality SDP:"
+    )
+    print_ram()
+
     if problem.status not in (
         cp.OPTIMAL,
         cp.OPTIMAL_INACCURATE,
@@ -306,55 +453,144 @@ def sdp_fixed_cardinality(
             f"SDP failed: {problem.status}"
         )
 
-    return float(problem.value)
+    # Return objective in original wake-loss scale
+    return float(
+        problem.value * scale
+    )
 
+
+# ============================================================
+# SDP - Spacing violation
+# ============================================================
 
 def sdp_spacing_violation(
     wake_loss_matrix,
     invalid_pairs,
     n_turbines=81,
     max_iters=20_000,
+    strong=True,
 ):
-    L = np.asarray(wake_loss_matrix, dtype=float)
+    """
+    SDP relaxation restricted to configurations
+    containing at least one spacing violation.
+
+    strong=True:
+        adds X >= 0.
+
+    strong=False:
+        lighter relaxation.
+    """
+
+    L = np.asarray(
+        wake_loss_matrix
+    )
+
     n = L.shape[0]
 
-    scale = np.max(np.abs(L))
-    L_scaled = L / scale
+    if L.ndim != 2 or L.shape[1] != n:
+        raise ValueError(
+            "wake_loss_matrix deve essere quadrata."
+        )
+
+    scale = float(
+        L.max()
+    )
+
+    if scale <= 0:
+        raise ValueError(
+            "Wake-loss matrix non valida: max <= 0."
+        )
+
+    invalid_pairs = np.asarray(
+        invalid_pairs,
+        dtype=np.int32,
+    )
+
+    if (
+        invalid_pairs.ndim != 2
+        or invalid_pairs.shape[1] != 2
+    ):
+        raise ValueError(
+            "invalid_pairs deve avere shape (m, 2)."
+        )
+
+    if len(invalid_pairs) == 0:
+        raise ValueError(
+            "Nessuna invalid pair disponibile."
+        )
+
+    if (
+        invalid_pairs.min() < 0
+        or invalid_pairs.max() >= n
+    ):
+        raise ValueError(
+            "invalid_pairs contiene indici fuori "
+            "dal range della wake-loss matrix."
+        )
+
+    # --------------------------------------------------
+    # Lifted variable
+    # --------------------------------------------------
 
     Y = cp.Variable(
         (n + 1, n + 1),
         PSD=True,
     )
 
-    x = Y[0, 1:]
-    X = Y[1:, 1:]
+    x = Y[
+        0,
+        1:
+    ]
 
-    invalid_pairs = np.asarray(
-        invalid_pairs,
-        dtype=int,
-    )
+    X = Y[
+        1:,
+        1:
+    ]
 
     ii = invalid_pairs[:, 0]
     jj = invalid_pairs[:, 1]
 
     constraints = [
         Y[0, 0] == 1,
-        cp.diag(X) == x,
-        cp.sum(x) == n_turbines,
-        x <= 1,
-        X >= 0,
 
-        cp.sum(X[ii, jj]) >= 1,
+        cp.diag(X) == x,
+
+        cp.sum(x) == n_turbines,
+
+        x <= 1,
+
+        # At least one spacing violation
+        cp.sum(
+            X[ii, jj]
+        ) >= 1,
     ]
 
-    problem = cp.Problem(
-        cp.Minimize(
-            0.5 * cp.sum(
-                cp.multiply(L_scaled, X)
+    if strong:
+        constraints.append(
+            X >= 0
+        )
+
+    objective = cp.Minimize(
+        (0.5 / scale)
+        * cp.sum(
+            cp.multiply(
+                L,
+                X,
             )
-        ),
+        )
+    )
+
+    problem = cp.Problem(
+        objective,
         constraints,
     )
+
+    gc.collect()
+
+    print(
+        "RAM before spacing SDP:"
+    )
+    print_ram()
 
     problem.solve(
         solver=cp.SCS,
@@ -365,6 +601,11 @@ def sdp_spacing_violation(
         verbose=True,
     )
 
+    print(
+        "RAM after spacing SDP:"
+    )
+    print_ram()
+
     if problem.status not in (
         cp.OPTIMAL,
         cp.OPTIMAL_INACCURATE,
@@ -373,101 +614,343 @@ def sdp_spacing_violation(
             f"SDP failed: {problem.status}"
         )
 
-    return float(problem.value * scale)
+    return float(
+        problem.value * scale
+    )
 
 
-def get_penalties(grid_resolution, max_iters, penalty_type, save_memory):
+# ============================================================
+# Penalty computation
+# ============================================================
 
-    # Setup
-    REFERENCE_LAYOUT = f"../results/layouts/cpsat_200_3600s.yaml"
-    REFERENCE_WAKE_MATRIX = f"../results/precomputed/wake_loss_200m.npz"
-    MIN_DISTANCE = 396  # 2 * 198 m
+def get_penalties(
+    grid_resolution,
+    max_iters,
+    penalty_type,
+    reference_layout,
+    save_memory=True,
+    strong=True,
+    delta=1e-6,
+):
+    """
+    Compute a penalty coefficient using:
+
+        lambda = UB - LB + delta
+
+    IMPORTANT:
+    UB and LB are both evaluated on the SAME
+    candidate grid and SAME wake-loss matrix.
+    """
+
+    MIN_DISTANCE = 396
+
+    # ========================================================
+    # Step 1: candidate grid
+    # ========================================================
 
     _, farm_area = get_farm_area()
-    X_grid, Y_grid, mask = get_mask(farm_area=farm_area, grid_resolution=grid_resolution)
-    candidate_locations = np.column_stack([X_grid[mask], Y_grid[mask]])
 
-    invalid_pairs = get_invalid_pairs(
-    candidate_locations=candidate_locations,
-    min_distance=MIN_DISTANCE,
-    )
-    print(f"Candidati totali : {len(candidate_locations)}")
-    print(f"Coppie non valide: {len(invalid_pairs)}")
-
-    # Step 1: retrieve upper bound feasible solution
-    z_reference_up, candidate_locations = layout_yaml_to_z(
-    yaml_path=REFERENCE_LAYOUT, grid_resolution=grid_resolution
+    X_grid, Y_grid, mask = get_mask(
+        farm_area=farm_area,
+        grid_resolution=grid_resolution,
     )
 
-    print(f"Candidati totali   : {len(candidate_locations)}")
-    print(f"Turbine selezionate: {z_reference_up.sum()}")
+    candidate_locations = np.column_stack([
+        X_grid[mask],
+        Y_grid[mask],
+    ])
 
-    # Step 2: compute lower bound using a relaxed solution
-    wake_loss = load_wake_loss_data(f"../results/precomputed/wake_loss_{grid_resolution}m.npz")
-    wake_loss_matrix = wake_loss["wake_loss_matrix"]
+    n_candidates = len(
+        candidate_locations
+    )
+
+    print(
+        f"Candidati totali: {n_candidates}"
+    )
+
+    # ========================================================
+    # Step 2: map feasible reference layout to current grid
+    # ========================================================
+
+    z_reference = layout_yaml_to_z(
+        yaml_path=reference_layout,
+        candidate_locations=candidate_locations,
+    )
+
+    print(
+        f"Turbine selezionate: "
+        f"{int(z_reference.sum())}"
+    )
+
+    # ========================================================
+    # Step 3: spacing pairs
+    #
+    # Only needed for spacing relaxation.
+    # ========================================================
+
+    invalid_pairs = None
+
+    if penalty_type == "spacing":
+
+        invalid_pairs = np.asarray(
+            get_invalid_pairs(
+                candidate_locations=candidate_locations,
+                min_distance=MIN_DISTANCE,
+            ),
+            dtype=np.int32,
+        )
+
+        print(
+            f"Coppie non valide: "
+            f"{len(invalid_pairs)}"
+        )
+
+    # ========================================================
+    # Step 4: load ONE wake-loss matrix
+    # ========================================================
+
+    wake_loss = load_wake_loss_data(
+        f"../results/precomputed/"
+        f"wake_loss_{grid_resolution}m.npz"
+    )
+
+    wake_loss_matrix = wake_loss.pop(
+        "wake_loss_matrix"
+    )
+
+    del wake_loss
+
+    # Optional quantization.
+    #
+    # Important:
+    # if enabled, BOTH UB and LB use the quantized matrix,
+    # so they remain internally coherent.
+    if save_memory:
+
+        wake_loss_matrix = safe_cast_uint16(
+            wake_loss_matrix
+        )
+
+    if wake_loss_matrix.shape != (
+        n_candidates,
+        n_candidates,
+    ):
+        raise ValueError(
+            "Wake-loss matrix e candidate grid "
+            "hanno dimensioni incompatibili: "
+            f"L={wake_loss_matrix.shape}, "
+            f"candidates={n_candidates}"
+        )
+
+    # ========================================================
+    # Step 5: compute UB using SAME matrix as SDP
+    # ========================================================
+
+    UB = compute_upper_bound(
+        wake_loss_matrix,
+        z_reference,
+    )
+
+    print(
+        f"Upper Bound: {UB}"
+    )
+
+    # Geometry no longer needed.
+    # z_reference also no longer needed because UB is known.
+
+    del (
+        farm_area,
+        X_grid,
+        Y_grid,
+        mask,
+        candidate_locations,
+        z_reference,
+    )
+
+    gc.collect()
+
+    print(
+        "RAM before SDP:"
+    )
+    print_ram()
+
+    # ========================================================
+    # Step 6: compute lower bound
+    # ========================================================
 
     if penalty_type == "cardinality":
+
         LB = sdp_fixed_cardinality(
-        wake_loss_matrix,
-        n_turbines=80,
-        max_iters=max_iters
+            wake_loss_matrix=wake_loss_matrix,
+            n_turbines=80,
+            max_iters=max_iters,
+            strong=strong,
         )
+
     elif penalty_type == "spacing":
+
         LB = sdp_spacing_violation(
-        wake_loss_matrix,
-        invalid_pairs,
-        n_turbines=81,
-        max_iters=max_iters
+            wake_loss_matrix=wake_loss_matrix,
+            invalid_pairs=invalid_pairs,
+            n_turbines=81,
+            max_iters=max_iters,
+            strong=strong,
         )
 
-    print(f"LB {penalty_type} = {LB}")
+    else:
+        raise ValueError(
+            f"Unknown penalty type: "
+            f"{penalty_type}"
+        )
 
-    # Step 3: compute lambda
-    wake_loss_up = load_wake_loss_data(REFERENCE_WAKE_MATRIX)
-    wake_loss_matrix_up = wake_loss_up["wake_loss_matrix"]
+    print(
+        f"Lower Bound ({penalty_type}): "
+        f"{LB}"
+    )
 
-    _lambda = compute_lambda_from_lb(wake_loss_matrix=wake_loss_matrix_up, z_reference=z_reference_up, lower_bound=LB)
+    # ========================================================
+    # Step 7: lambda
+    # ========================================================
 
-    print(f"Lambda {penalty_type} = {_lambda}")
+    lambda_raw = (
+        UB
+        - LB
+        + delta
+    )
 
-    return _lambda
+    # A negative cardinality lambda is suspicious:
+    # LB80 should not exceed a valid UB81 when L >= 0.
+    if (
+        penalty_type == "cardinality"
+        and lambda_raw < 0
+    ):
+        raise ValueError(
+            "Negative cardinality lambda: "
+            f"UB={UB}, LB={LB}. "
+            "Check SDP validity, grid consistency "
+            "and objective scaling."
+        )
+
+    # For spacing, UB < LB can in principle mean that
+    # the violating class is already worse than the
+    # feasible reference even without a positive penalty.
+    if (
+        penalty_type == "spacing"
+        and lambda_raw < 0
+    ):
+        print(
+            "WARNING: spacing UB < LB. "
+            "Setting lambda_spacing to 0."
+        )
+
+        lambda_ = 0.0
+
+    else:
+        lambda_ = float(
+            lambda_raw
+        )
+
+    print(
+        f"Lambda {penalty_type}: "
+        f"{lambda_}"
+    )
+
+    # ========================================================
+    # Cleanup
+    # ========================================================
+
+    del wake_loss_matrix
+
+    if invalid_pairs is not None:
+        del invalid_pairs
+
+    gc.collect()
+
+    print(
+        "RAM after SDP cleanup:"
+    )
+    print_ram()
+
+    return lambda_
+
+
+# ============================================================
+# CLI
+# ============================================================
 
 if __name__ == "__main__":
-    import argparse
-    from src.solvers.utils import get_invalid_pairs
-    from src.qubo_windfarm_layout.evaluation import load_layout_coordinates
-    from src.qubo_windfarm_layout.model import get_farm_area, get_mask, load_wake_loss_data
 
-    parser = argparse.ArgumentParser(description="Compute QUBO penalty coefficients.")
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Compute QUBO penalty coefficients "
+            "using SDP relaxation."
+        )
+    )
+
     parser.add_argument(
         "--max-iters",
         type=int,
         required=True,
-        help="Maximum SDP solver iterations (default: 1000).",
+        help="Maximum SCS iterations.",
     )
+
     parser.add_argument(
         "--grid-resolution",
         type=int,
         required=True,
-        help="Grid resolution in metres (default: 300).",
+        help="Grid resolution in metres.",
     )
-    parser.add_argument(
-            "--penalty-type",
-            type=str,
-            choices=["cardinality", "spacing"],
-            required=True,
-            help="Penalty type to compute",
-        )
 
     parser.add_argument(
-                "--save-memory",
-                type=bool,
-                choices=[True, False],
-                required=True,
-                default=True,
-                help="Decide matrix quantization",
-            )
-    
+        "--penalty-type",
+        type=str,
+        choices=[
+            "cardinality",
+            "spacing",
+        ],
+        required=True,
+        help="Penalty type to compute.",
+    )
+
+    parser.add_argument(
+        "--reference-layout",
+        type=str,
+        required=True,
+        help=(
+            "Feasible reference layout YAML generated "
+            "on the SAME candidate grid."
+        ),
+    )
+
+    parser.add_argument(
+        "--save-memory",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Quantize wake-loss matrix to uint16. "
+            "Use --no-save-memory to keep original dtype."
+        ),
+    )
+
+    parser.add_argument(
+        "--strong",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Add X >= 0 tightening. "
+            "Use --no-strong for lower RAM usage."
+        ),
+    )
+
     args = parser.parse_args()
 
-    get_penalties(grid_resolution=args.grid_resolution, max_iters=args.max_iters, penalty_type=args.penalty_type, save_memory=args.save_memory)
+    get_penalties(
+        grid_resolution=args.grid_resolution,
+        max_iters=args.max_iters,
+        penalty_type=args.penalty_type,
+        reference_layout=args.reference_layout,
+        save_memory=args.save_memory,
+        strong=args.strong,
+    )
