@@ -822,6 +822,16 @@ def solve_wflo_sqbm_qplib(
         ) from e
 
     L = np.asarray(wake_loss_matrix)
+
+ 
+
+    q_scale = float(L.max())
+
+    if q_scale <= 0:
+        raise ValueError("wake_loss_matrix must contain positive coefficients.")
+
+    Q = L / q_scale
+
     if L.ndim != 2 or L.shape[0] != L.shape[1]:
         raise ValueError("wake_loss_matrix must be square.")
     n = L.shape[0]
@@ -865,7 +875,7 @@ def solve_wflo_sqbm_qplib(
     #
     # SQBM+ HDF5 uses 3.40283e+38 to represent +inf; therefore
     # -3.40283e+38 is used for an unbounded lower side.
-    SQBM_INF = np.float32(3.40283e38)
+    SQBM_INF = np.finfo(np.float32).max
 
     lower = np.full(
         m_total,
@@ -906,7 +916,7 @@ def solve_wflo_sqbm_qplib(
 
     t0 = time.time()
     sqbm_result = client.solve_qplib(
-        Q=L,
+        Q=Q,
         B=B,
         A=A,
         lower=lower,
