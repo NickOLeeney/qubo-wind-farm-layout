@@ -227,6 +227,159 @@ class SQBMClient:
         return bio.getvalue()
 
     # ------------------------------------------------------------------
+    # QPLIB HDF5 helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _symmetrized_lower_float32(Q: np.ndarray) -> np.ndarray:
+        """
+        Fold a quadratic matrix into SQBM+/QPLIB lower-triangular storage.
+
+        For i > j the stored coefficient is Q[i,j] + Q[j,i], while the
+        diagonal is kept unchanged.  The output is float32, as required by
+        SQBM+ HDF5.  The row-wise implementation avoids the large temporary
+        Q + Q.T and, importantly, avoids integer overflow when Q is uint16.
+        """
+        Q = np.asarray(Q)
+        if Q.ndim != 2 or Q.shape[0] != Q.shape[1]:
+            raise ValueError("Q must be a 2D square matrix.")
+
+        n = Q.shape[0]
+        L = np.zeros((n, n), dtype=np.float32)
+        for i in range(n):
+            L[i, i] = Q[i, i]
+            if i:
+                L[i, :i] = (
+                    np.asarray(Q[i, :i], dtype=np.float32)
+                    + np.asarray(Q[:i, i], dtype=np.float32)
+                )
+        return L
+
+    @staticmethod
+    def qplib_to_hdf5(
+        Q,
+        B,
+        A,
+        lower,
+        upper,
+        *,
+        q_format: str = "csr",
+        a_format: str = "csr",
+    ) -> bytes:
+        """
+        Encode a constrained binary quadratic problem for SQBM+ qplib.
+
+        SQBM+ solves
+
+            min  1/2 x^T Q x + B^T x
+            s.t. lower <= A x <= upper
+
+        The HDF5 layout is:
+
+            /qubo/data
+            /linear/data
+            /constraints/coeff/data
+            /constraints/lower/data
+            /constraints/upper/data
+
+        Matrices may independently use ``dense`` or ``csr`` storage; vectors
+        are always dense float32.  For CSR matrices the manual's ``shape``
+        dataset is included, which is essential for rectangular A.
+        """
+        try:
+            import h5py
+        except ImportError as e:
+            raise ImportError(
+                "QPLIB HDF5 encoding requires h5py. Install it with: pip install h5py"
+            ) from e
+
+        try:
+            import scipy.sparse as sp
+        except ImportError as e:
+            raise ImportError(
+                "QPLIB HDF5 encoding requires scipy. Install it with: pip install scipy"
+            ) from e
+
+        q_format = str(q_format).lower()
+        a_format = str(a_format).lower()
+        for name, fmt in (("q_format", q_format), ("a_format", a_format)):
+            if fmt not in {"csr", "dense"}:
+                raise ValueError(f"{name} must be 'csr' or 'dense', got {fmt!r}.")
+
+        B = np.asarray(B, dtype=np.float32).reshape(-1)
+        lower = np.asarray(lower, dtype=np.float32).reshape(-1)
+        upper = np.asarray(upper, dtype=np.float32).reshape(-1)
+
+        # Q may be dense or sparse.  SQBM+ expects lower-triangular QPLIB
+        # coefficients; off-diagonal symmetric contributions are folded.
+        if sp.issparse(Q):
+            Qs = Q.tocsr().astype(np.float32)
+            if Qs.shape[0] != Qs.shape[1]:
+                raise ValueError("Q must be square.")
+            Q_lower = sp.tril(Qs + Qs.T, k=-1, format="csr")
+            Q_lower = Q_lower + sp.diags(Qs.diagonal().astype(np.float32), format="csr")
+            n = Qs.shape[0]
+        else:
+            Q_arr = np.asarray(Q)
+            if Q_arr.ndim != 2 or Q_arr.shape[0] != Q_arr.shape[1]:
+                raise ValueError("Q must be a 2D square matrix.")
+            n = Q_arr.shape[0]
+            Q_lower = SQBMClient._symmetrized_lower_float32(Q_arr)
+
+        if B.shape != (n,):
+            raise ValueError(f"B must have shape ({n},), got {B.shape}.")
+
+        if sp.issparse(A):
+            A_mat = A.tocsr().astype(np.float32)
+            m, n_a = A_mat.shape
+        else:
+            A_mat = np.asarray(A, dtype=np.float32)
+            if A_mat.ndim != 2:
+                raise ValueError("A must be a 2D matrix.")
+            m, n_a = A_mat.shape
+
+        if n_a != n:
+            raise ValueError(f"A must have {n} columns, got {n_a}.")
+        if lower.shape != (m,) or upper.shape != (m,):
+            raise ValueError(
+                f"lower and upper must both have shape ({m},); "
+                f"got {lower.shape} and {upper.shape}."
+            )
+        if np.any(lower > upper):
+            raise ValueError("Every lower bound must be <= the corresponding upper bound.")
+
+        def write_vector(hf, path, vector):
+            g = hf.create_group(path)
+            ds = g.create_dataset("data", data=np.asarray(vector, dtype=np.float32))
+            ds.attrs["format"] = "dense"
+
+        def write_matrix(hf, path, matrix, fmt):
+            g = hf.create_group(path)
+            if fmt == "dense":
+                arr = matrix.toarray() if sp.issparse(matrix) else np.asarray(matrix)
+                ds = g.create_dataset("data", data=np.asarray(arr, dtype=np.float32))
+                ds.attrs["format"] = "dense"
+                return
+
+            M = matrix.tocsr() if sp.issparse(matrix) else sp.csr_matrix(matrix)
+            M = M.astype(np.float32, copy=False)
+            ds = g.create_dataset("data", data=M.data.astype(np.float32, copy=False))
+            ds.attrs["format"] = "csr"
+            g.create_dataset("shape", data=np.asarray(M.shape, dtype=np.int32))
+            g.create_dataset("indices", data=M.indices.astype(np.uint32, copy=False))
+            g.create_dataset("indptr", data=M.indptr.astype(np.uint32, copy=False))
+
+        bio = io.BytesIO()
+        with h5py.File(bio, "w") as hf:
+            write_matrix(hf, "qubo", Q_lower, q_format)
+            write_vector(hf, "linear", B)
+            write_matrix(hf, "constraints/coeff", A_mat, a_format)
+            write_vector(hf, "constraints/lower", lower)
+            write_vector(hf, "constraints/upper", upper)
+
+        return bio.getvalue()
+
+    # ------------------------------------------------------------------
     # Internal utility
     # ------------------------------------------------------------------
 
@@ -310,6 +463,82 @@ class SQBMClient:
             algo=algo, dt=dt, C=C,
         )
         return self._post("qubo", data, params)
+
+    # ------------------------------------------------------------------
+    # Solver QPLIB  (numpy/scipy matrices -> HDF5)
+    # ------------------------------------------------------------------
+
+    def solve_qplib(
+        self,
+        Q,
+        B,
+        A,
+        lower,
+        upper,
+        *,
+        q_format: str = "csr",
+        a_format: str = "csr",
+        steps: Optional[int] = None,
+        loops: Optional[int] = None,
+        timeout: Optional[int] = None,
+        maxwait: Optional[int] = None,
+        target: Optional[float] = None,
+        maxout: Optional[int] = None,
+        algo: Optional[int] = None,
+        dt: Optional[float] = None,
+        C: Optional[float] = None,
+        pd3o_rate: Optional[float] = None,
+        phi: Optional[float] = None,
+        detail_level: Optional[int] = None,
+        detail_log: Optional[int] = None,
+    ) -> SQBMResult:
+        """Solve a constrained binary quadratic problem via SQBM+ qplib."""
+        data = self.qplib_to_hdf5(
+            Q, B, A, lower, upper,
+            q_format=q_format,
+            a_format=a_format,
+        )
+        params = dict(
+            steps=steps, loops=loops, timeout=timeout,
+            maxwait=maxwait, target=target, maxout=maxout,
+            algo=algo, dt=dt, C=C, phi=phi,
+            detail_level=detail_level, detail_log=detail_log,
+        )
+        # The SQBM+ API spells this parameter exactly as "PD3Orate".
+        if pd3o_rate is not None:
+            params["PD3Orate"] = pd3o_rate
+        return self._post("qplib", data, params)
+
+    def solve_qplib_file(
+        self,
+        filepath: str,
+        *,
+        steps: Optional[int] = None,
+        loops: Optional[int] = None,
+        timeout: Optional[int] = None,
+        maxwait: Optional[int] = None,
+        target: Optional[float] = None,
+        maxout: Optional[int] = None,
+        algo: Optional[int] = None,
+        dt: Optional[float] = None,
+        C: Optional[float] = None,
+        pd3o_rate: Optional[float] = None,
+        phi: Optional[float] = None,
+        detail_level: Optional[int] = None,
+        detail_log: Optional[int] = None,
+    ) -> SQBMResult:
+        """Solve a pre-built QPLIB/HDF5 file with the qplib endpoint."""
+        with open(filepath, "rb") as f:
+            data = f.read()
+        params = dict(
+            steps=steps, loops=loops, timeout=timeout,
+            maxwait=maxwait, target=target, maxout=maxout,
+            algo=algo, dt=dt, C=C, phi=phi,
+            detail_level=detail_level, detail_log=detail_log,
+        )
+        if pd3o_rate is not None:
+            params["PD3Orate"] = pd3o_rate
+        return self._post("qplib", data, params)
 
     # ------------------------------------------------------------------
     # Solver QUBO  (pre-built file)
@@ -533,14 +762,208 @@ def solve_wflo_sqbm(
         )
         # solution = _greedy_repair(solution, Q, invalid_pairs, n_turbines)
 
-    L = np.asarray(wake_loss_matrix, dtype=float)
+    L = np.asarray(wake_loss_matrix)
     sel = np.where(solution == 1)[0]
-    wake_loss = float(L[np.ix_(sel, sel)].sum() / 2)
+    wake_loss = float(0.5 * L[np.ix_(sel, sel)].sum(dtype=np.float64))
 
     print(f"Turbine selezionate: {solution.sum()}")
     print(f"Pairwise wake loss: {wake_loss:.4f}")
 
     return solution, sqbm_result
+
+
+# ---------------------------------------------------------------------------
+# High-level WFLO solver via QPLIB (hard constraints, no QUBO penalties)
+# ---------------------------------------------------------------------------
+
+def solve_wflo_sqbm_qplib(
+    wake_loss_matrix,
+    invalid_pairs,
+    n_turbines: int = 81,
+    host: str = "localhost",
+    port: int = 8000,
+    http_timeout: int = 120,
+    q_format: str = "dense",
+    a_format: str = "csr",
+    steps: Optional[int] = None,
+    loops: Optional[int] = None,
+    timeout: Optional[int] = None,
+    maxwait: Optional[int] = None,
+    target: Optional[float] = None,
+    maxout: Optional[int] = None,
+    algo: Optional[int] = None,
+    dt: Optional[float] = None,
+    C: Optional[float] = None,
+    pd3o_rate: Optional[float] = None,
+    phi: Optional[float] = None,
+    detail_level: Optional[int] = 1,
+    detail_log: Optional[int] = None,
+) -> tuple[np.ndarray, SQBMResult]:
+    """
+    Solve WFLO with SQBM+'s qplib endpoint.
+
+    Unlike ``solve_wflo_sqbm`` (QUBO), cardinality and spacing are sent as
+    hard linear constraints, so no lambda_cardinality/lambda_spacing penalties
+    and no pre-built penalized Q matrix are required.
+
+    Objective:
+        min sum_{i<j} L_ij z_i z_j
+
+    QPLIB form:
+        min 1/2 z^T L z
+
+    because ``wake_loss_matrix`` is symmetric with zero diagonal.
+    """
+    try:
+        import scipy.sparse as sp
+    except ImportError as e:
+        raise ImportError(
+            "WFLO QPLIB construction requires scipy. Install it with: pip install scipy"
+        ) from e
+
+    L = np.asarray(wake_loss_matrix)
+    if L.ndim != 2 or L.shape[0] != L.shape[1]:
+        raise ValueError("wake_loss_matrix must be square.")
+    n = L.shape[0]
+
+    invalid_pairs = np.asarray(invalid_pairs, dtype=np.int32)
+    if invalid_pairs.size == 0:
+        invalid_pairs = np.empty((0, 2), dtype=np.int32)
+    if invalid_pairs.ndim != 2 or invalid_pairs.shape[1] != 2:
+        raise ValueError("invalid_pairs must have shape (m, 2).")
+    if len(invalid_pairs) and (invalid_pairs.min() < 0 or invalid_pairs.max() >= n):
+        raise ValueError("invalid_pairs contains indices outside the wake-loss matrix.")
+
+    m_spacing = len(invalid_pairs)
+    m_total = 1 + m_spacing
+
+    # Sparse A without materializing a dense (m x n) matrix or a rows array.
+    # Row 0: sum_i z_i = n_turbines.
+    # Rows 1..m: z_i + z_j <= 1 for every invalid pair.
+    nnz = n + 2 * m_spacing
+    indices = np.empty(nnz, dtype=np.int32)
+    indices[:n] = np.arange(n, dtype=np.int32)
+    if m_spacing:
+        indices[n:] = invalid_pairs.reshape(-1)
+
+    indptr = np.empty(m_total + 1, dtype=np.int64)
+    indptr[0] = 0
+    indptr[1] = n
+    if m_spacing:
+        indptr[2:] = n + 2 * np.arange(1, m_spacing + 1, dtype=np.int64)
+
+    data = np.ones(nnz, dtype=np.float32)
+    A = sp.csr_matrix((data, indices, indptr), shape=(m_total, n))
+
+    # QPLIB constraint bounds.
+    #
+    # Row 0 is an equality:
+    #     sum_i z_i = n_turbines
+    #
+    # Spacing rows are upper-bound-only constraints:
+    #     z_i + z_j <= 1
+    #
+    # SQBM+ HDF5 uses 3.40283e+38 to represent +inf; therefore
+    # -3.40283e+38 is used for an unbounded lower side.
+    SQBM_INF = np.float32(3.40283e38)
+
+    lower = np.full(
+        m_total,
+        -SQBM_INF,
+        dtype=np.float32,
+    )
+
+    upper = np.ones(
+        m_total,
+        dtype=np.float32,
+    )
+
+    lower[0] = np.float32(n_turbines)
+    upper[0] = np.float32(n_turbines)
+
+    B = np.zeros(n, dtype=np.float32)
+
+    if timeout is not None:
+        http_timeout = max(http_timeout, timeout + 60)
+
+    print(
+        f"n = {n} variabili, {m_spacing} spacing constraints, "
+        f"SQBM+ QPLIB @ {host}:{port} (Q={q_format}, A={a_format})"
+    )
+
+    client = SQBMClient(
+        host=host,
+        port=port,
+        timeout=http_timeout,
+        problem_format="hdf5",
+    )
+
+    if not client.health_check():
+        raise RuntimeError(
+            f"Server SQBM+ non raggiungibile a {host}:{port}. "
+            "Avvia il server oppure controlla host/port."
+        )
+
+    t0 = time.time()
+    sqbm_result = client.solve_qplib(
+        Q=L,
+        B=B,
+        A=A,
+        lower=lower,
+        upper=upper,
+        q_format=q_format,
+        a_format=a_format,
+        steps=steps,
+        loops=loops,
+        timeout=timeout,
+        maxwait=maxwait,
+        target=target,
+        maxout=maxout,
+        algo=algo,
+        dt=dt,
+        C=C,
+        pd3o_rate=pd3o_rate,
+        phi=phi,
+        detail_level=detail_level,
+        detail_log=detail_log,
+    )
+    elapsed = time.time() - t0
+    print(f"QPLIB completato in {elapsed:.1f}s  (server: {sqbm_result.time:.1f}s)")
+
+    solution = np.asarray(sqbm_result.result, dtype=np.int8)
+    if solution.shape != (n,):
+        raise RuntimeError(
+            f"SQBM+ returned a solution of shape {solution.shape}; expected ({n},)."
+        )
+    if not np.all((solution == 0) | (solution == 1)):
+        raise RuntimeError("SQBM+ qplib returned non-binary decision variables.")
+
+    # QPLIB constraints are hard: validate instead of repairing silently.
+    cardinality = int(solution.sum())
+    if cardinality != n_turbines:
+        raise RuntimeError(
+            f"QPLIB result violates cardinality: {cardinality} != {n_turbines}."
+        )
+
+    if m_spacing:
+        violated = (
+            solution[invalid_pairs[:, 0]] + solution[invalid_pairs[:, 1]] > 1
+        )
+        n_violated = int(np.count_nonzero(violated))
+        if n_violated:
+            raise RuntimeError(
+                f"QPLIB result violates {n_violated} spacing constraints."
+            )
+
+    sel = np.flatnonzero(solution)
+    wake_loss = float(0.5 * L[np.ix_(sel, sel)].sum(dtype=np.float64))
+
+    print(f"Turbine selezionate: {cardinality}")
+    print(f"Spacing violations: 0")
+    print(f"Pairwise wake loss: {wake_loss:.4f}")
+    print(f"SQBM+ objective: {sqbm_result.value:.4f}")
+
+    return solution.astype(int), sqbm_result
 
 
 # ---------------------------------------------------------------------------
