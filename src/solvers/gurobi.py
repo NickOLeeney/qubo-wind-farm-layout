@@ -2,7 +2,7 @@ import os
 import numpy as np
 import gurobipy as gp
 import scipy.sparse as sp
-
+import gc
 from gurobipy import GRB
 from dotenv import load_dotenv
 
@@ -27,7 +27,8 @@ def solve_wflo_gurobi(
     n_turbines=81,
     warm_start=None,
     time_limit=None,
-    mip_gap=1e-3,
+    mip_gap=0.05,
+    mip_focus=0,
     verbose=True,
 ):
     L = wake_loss_matrix
@@ -44,11 +45,11 @@ def solve_wflo_gurobi(
     model.Params.OutputFlag = 1 if verbose else 0
     model.Params.MIPGap = mip_gap
     model.Params.NonConvex = 2
-
     model.Params.Threads = 1
     model.Params.NodefileStart = 0.5
     model.Params.NodefileDir = "/tmp"
     model.Params.SoftMemLimit = 28
+    model.Params.MIPFocus = mip_focus
 
     if time_limit is not None:
         model.Params.TimeLimit = time_limit

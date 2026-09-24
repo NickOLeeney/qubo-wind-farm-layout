@@ -1,3 +1,4 @@
+import os
 import yaml
 import numpy as np
 from pathlib import Path
@@ -10,6 +11,7 @@ def save_benchmark_layout(
     selected_locations,
     solver_name,
     filename=None,
+    output_dir=None,
     grid_resolution=None,
     time_limit_s=None,
     metrics=None,
@@ -31,8 +33,11 @@ def save_benchmark_layout(
         raise ValueError(
             "selected_locations deve avere shape (N, 2)"
         )
+    if output_dir:
+        output_dir = Path(os.path.join(_PROJECT_ROOT, output_dir))
+    else:
+        output_dir = Path(OUTPUT_DIR)
 
-    output_dir = Path(OUTPUT_DIR)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if filename is None:
