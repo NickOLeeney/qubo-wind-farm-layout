@@ -1,3 +1,4 @@
+import os
 import sys
 import yaml
 import numpy as np
@@ -210,10 +211,11 @@ def get_benchmark_comparison(include_benchmark=True):
     # ============================================================
 
     our_results = []
+    folder = Path(OUR_LAYOUTS_DIR)
 
-    layout_files = sorted(
-        OUR_LAYOUTS_DIR.glob("*.yaml")
-    )
+    layout_files = [f for f in folder.rglob("*") if f.is_file()]
+    
+ 
 
     for filepath in layout_files:
 
