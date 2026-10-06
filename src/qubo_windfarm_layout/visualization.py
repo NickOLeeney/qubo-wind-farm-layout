@@ -53,6 +53,7 @@ def plot_selected_layout(
 
     plt.show()
 
+
 def plot_gurobi_refinement(
     gurobi_positions,
     candidate_locations,

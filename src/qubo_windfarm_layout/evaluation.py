@@ -320,3 +320,35 @@ def get_benchmark_comparison(include_benchmark=True):
     )
 
     return df_results
+
+
+def layouts_folder_to_df(folder_path):
+    folder_path = Path(folder_path)
+
+    rows = []
+
+    for layout_yaml in sorted(
+        list(folder_path.glob("*.yaml")) +
+        list(folder_path.glob("*.yml"))
+    ):
+        with open(layout_yaml, "r") as f:
+            data = yaml.safe_load(f)
+
+        metadata = data.get("metadata", {})
+
+        row = {
+            "file": layout_yaml.name,
+            "solver": metadata.get("solver"),
+            "grid_resolution": metadata.get("grid_resolution"),
+            "n_turbines": metadata.get("n_turbines"),
+            "time_limit_s": metadata.get("time_limit_s"),
+            "h_qubo": metadata.get("h_qubo"),
+            "aep_gwh": metadata.get("aep_gwh"),
+        }
+
+        cached_metrics = metadata.get("cached_metrics", {})
+        row.update(cached_metrics)
+
+        rows.append(row)
+
+    return pd.DataFrame(rows)
