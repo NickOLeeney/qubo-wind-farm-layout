@@ -7,6 +7,15 @@ metadata:
   time_limit_s: 3600
   h_qubo: null
   aep_gwh: 2853.7619238840152
+  cached_metrics:
+    n_turbines: 81
+    aep_gwh: 2853.7619238840152
+    wake_loss_pct: 17.199112738674703
+    min_distance_m: 511.9999999999998
+    valid_cardinality: true
+    valid_spacing: true
+    valid_boundary: true
+    valid: true
 definitions:
   wind_plant:
     type: object

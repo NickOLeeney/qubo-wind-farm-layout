@@ -1,0 +1,11 @@
+\begin{tabular}{lrrrrrrrrrr}
+\toprule
+Method & Best AEP [GWh] & Wake loss [%] & Pairwise H [GWh] & Best res. [m] & Time limit global [s] & Time limit / local step [s] & Min dist. [m] & Valid & vs Baseline [%] & Gap to DEBO [%] \\
+\midrule
+Gurobi MIQP & 2901.71 & 15.81 & 834.17 & 2.00 & -- & 1800.00 & 444.00 & True & 1.78 & 0.40 \\
+OR-Tools CP-SAT & 2903.22 & 15.76 & 837.42 & 2.00 & 3600.00 & 1800.00 & 449.91 & True & 1.83 & 0.34 \\
+SQBM+ & 2895.68 & 15.98 & 848.52 & 2.00 & -- & 60.00 & 404.86 & True & 1.56 & 0.60 \\
+Baseline (Thomas et al.) & 2851.10 & 17.28 & -- & -- & -- & -- & 499.86 & False & 0.00 & 2.13 \\
+DEBO (Thomas et al.) & 2913.22 & 15.47 & -- & -- & -- & -- & 407.55 & True & 2.18 & 0.00 \\
+\bottomrule
+\end{tabular}

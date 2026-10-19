@@ -54,15 +54,15 @@ def plot_selected_layout(
     plt.show()
 
 
-def plot_gurobi_refinement(
-    gurobi_positions,
+def plot_refinement(
+    positions,
     candidate_locations,
     radius_m,
     rotor_diameter=198.0,
     figsize=(10, 10),
 ):
-    gurobi_positions = np.asarray(
-        gurobi_positions,
+    positions = np.asarray(
+        positions,
         dtype=float,
     )
 
@@ -86,7 +86,7 @@ def plot_gurobi_refinement(
 
     gurobi_set = {
         tuple(np.round(p, 6))
-        for p in gurobi_positions
+        for p in positions
     }
 
     refinement_mask = np.array([
@@ -116,8 +116,8 @@ def plot_gurobi_refinement(
     # --------------------------------------------------
 
     ax.scatter(
-        gurobi_positions[:, 0],
-        gurobi_positions[:, 1],
+        positions[:, 0],
+        positions[:, 1],
         s=30,
         marker="x",
         label="Gurobi solution",
@@ -126,7 +126,7 @@ def plot_gurobi_refinement(
 
     rotor_radius = rotor_diameter / 2
 
-    for x, y in gurobi_positions:
+    for x, y in positions:
 
         # Search radius
         search_area = Circle(

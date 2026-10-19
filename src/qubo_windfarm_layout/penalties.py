@@ -5,14 +5,18 @@ import numpy as np
 import cvxpy as cp
 
 from scipy.spatial import cKDTree
-
+from shapely.geometry import Point
 sys.path.append("..")
+
+
 
 from src.qubo_windfarm_layout.model import (
     compute_aep_from_coords,
     get_farm_area,
     get_mask,
     load_wake_loss_data,
+    build_local_wake_loss_matrix_optimized,
+
 )
 
 from src.qubo_windfarm_layout.evaluation import (
@@ -457,8 +461,6 @@ def sdp_fixed_cardinality(
     return float(
         problem.value * scale
     )
-
-
 # ============================================================
 # SDP - Spacing violation
 # ============================================================
@@ -617,8 +619,6 @@ def sdp_spacing_violation(
     return float(
         problem.value * scale
     )
-
-
 # ============================================================
 # Penalty computation
 # ============================================================
@@ -874,6 +874,409 @@ def get_penalties(
     return lambda_
 
 
+def get_local_penalties(
+    grid_resolution,
+    max_iters,
+    penalty_type,
+    reference_layout,
+    wake_loss_path,
+    save_memory=True,
+    strong=True,
+    delta=1e-6,
+    match_tol=1e-6,
+):
+    """
+    Compute a Big-M penalty for a LOCAL WFLO problem:
+
+        lambda = UB - LB + delta
+
+    The local candidate set is generated around the turbines of a
+    feasible reference layout.
+
+    IMPORTANT:
+    UB, LB and the final SQBM+ QUBO must use the SAME:
+        - candidate locations
+        - wake-loss matrix
+        - objective scaling
+    """
+
+    MIN_DISTANCE = 396.0
+    N_TURBINES = 81
+    search_radius = 2*grid_resolution
+    # ========================================================
+    # Step 1: reference feasible layout
+    # ========================================================
+
+    reference_positions = np.asarray(
+        load_layout_coordinates(reference_layout),
+        dtype=float,
+    )
+
+    if len(reference_positions) != N_TURBINES:
+        raise ValueError(
+            f"Expected {N_TURBINES} turbines, "
+            f"found {len(reference_positions)}."
+        )
+
+    _, farm_area = get_farm_area()
+
+    # ========================================================
+    # Step 2: local candidate grid
+    # ========================================================
+
+    n_steps = int(
+        np.floor(
+            search_radius / grid_resolution
+        )
+    )
+
+    offsets_1d = (
+        np.arange(
+            -n_steps,
+            n_steps + 1,
+        )
+        * grid_resolution
+    )
+
+    dx, dy = np.meshgrid(
+        offsets_1d,
+        offsets_1d,
+    )
+
+    local_offsets = np.column_stack(
+        [
+            dx.ravel(),
+            dy.ravel(),
+        ]
+    )
+
+    # Keep only points inside the circular neighborhood
+    local_offsets = local_offsets[
+        np.linalg.norm(
+            local_offsets,
+            axis=1,
+        )
+        <= search_radius + 1e-9
+    ]
+
+    # Generate one local grid around each current turbine
+    candidate_blocks = [
+        position + local_offsets
+        for position in reference_positions
+    ]
+
+    candidate_locations = np.vstack(
+        candidate_blocks
+    )
+
+    # Explicitly include incumbent positions.
+    # This guarantees that the feasible reference layout belongs
+    # to the local search space.
+    candidate_locations = np.vstack(
+        [
+            candidate_locations,
+            reference_positions,
+        ]
+    )
+
+    # Keep only points inside/on the farm boundary
+    inside_mask = np.array(
+        [
+            farm_area.covers(
+                Point(x, y)
+            )
+            for x, y in candidate_locations
+        ],
+        dtype=bool,
+    )
+
+    candidate_locations = (
+        candidate_locations[
+            inside_mask
+        ]
+    )
+
+    # Remove duplicates caused by overlapping neighborhoods
+    candidate_locations = np.unique(
+        np.round(
+            candidate_locations,
+            6,
+        ),
+        axis=0,
+    )
+
+    n_candidates = len(
+        candidate_locations
+    )
+
+    print(
+        f"Local candidates: {n_candidates}"
+    )
+
+    # ========================================================
+    # Step 3: map reference layout -> local binary vector
+    # ========================================================
+
+    candidate_tree = cKDTree(
+        candidate_locations
+    )
+
+    distances, selected_indices = (
+        candidate_tree.query(
+            reference_positions,
+            k=1,
+        )
+    )
+
+    if np.any(
+        distances > match_tol
+    ):
+        raise ValueError(
+            "Reference layout is not contained in the "
+            "local candidate set. "
+            f"Max distance = {distances.max():.6f} m."
+        )
+
+    if (
+        len(np.unique(selected_indices))
+        != N_TURBINES
+    ):
+        raise ValueError(
+            "Multiple reference turbines mapped to "
+            "the same local candidate."
+        )
+
+    z_reference = np.zeros(
+        n_candidates,
+        dtype=np.int8,
+    )
+
+    z_reference[
+        selected_indices
+    ] = 1
+
+    print(
+        f"Reference turbines: "
+        f"{int(z_reference.sum())}"
+    )
+
+    # ========================================================
+    # Step 4: spacing pairs
+    # ========================================================
+
+    invalid_pairs = None
+
+    if penalty_type == "spacing":
+
+        invalid_pairs = np.asarray(
+            get_invalid_pairs(
+                candidate_locations=
+                    candidate_locations,
+                min_distance=
+                    MIN_DISTANCE,
+            ),
+            dtype=np.int32,
+        )
+
+        print(
+            f"Invalid pairs: "
+            f"{len(invalid_pairs)}"
+        )
+
+    # ========================================================
+    # Step 5: LOCAL wake-loss matrix
+    # ========================================================
+
+    
+
+    
+
+    # wake_result = (
+    #     build_wake_loss_matrix_optimized(
+    #         candidate_locations,
+    #         grid_resolution,
+    #     )
+    # )
+    import os
+    if not os.path.exists(wake_loss_path):
+        wake_loss_matrix, A0 = build_local_wake_loss_matrix_optimized(
+        candidate_locations,
+        output_path=wake_loss_path)
+        print("Building local wake-loss matrix...")
+    else:
+        print("Found existing wake-loss matrix")
+        wake_loss_matrix = np.load(wake_loss_path)["wake_loss_matrix"]
+
+
+    # Your current implementation returns
+    # (wake_loss_matrix, A0)
+    # wake_loss_matrix = wake_result[0]
+
+    if wake_loss_matrix.shape != (
+        n_candidates,
+        n_candidates,
+    ):
+        raise ValueError(
+            "Wake-loss matrix and local candidate "
+            "set are incompatible: "
+            f"L={wake_loss_matrix.shape}, "
+            f"candidates={n_candidates}."
+        )
+
+    # ========================================================
+    # Step 6: optional compression
+    # ========================================================
+
+    if save_memory:
+
+        wake_loss_matrix = (
+            safe_cast_uint16(
+                wake_loss_matrix
+            )
+        )
+
+    # ========================================================
+    # Step 7: UB from feasible incumbent
+    # ========================================================
+
+    UB = compute_upper_bound(
+        wake_loss_matrix,
+        z_reference,
+    )
+
+    print(
+        f"Upper Bound: {UB}"
+    )
+
+    print(
+        "RAM before SDP:"
+    )
+
+    print_ram()
+
+    # ========================================================
+    # Step 8: SDP lower bound
+    # ========================================================
+
+    if penalty_type == "cardinality":
+
+        # Lowest objective potentially reachable with one
+        # turbine fewer than the required 81.
+        LB = sdp_fixed_cardinality(
+            wake_loss_matrix=
+                wake_loss_matrix,
+            n_turbines=
+                N_TURBINES - 1,
+            max_iters=
+                max_iters,
+            strong=
+                strong,
+        )
+
+    elif penalty_type == "spacing":
+
+        LB = sdp_spacing_violation(
+            wake_loss_matrix=
+                wake_loss_matrix,
+            invalid_pairs=
+                invalid_pairs,
+            n_turbines=
+                N_TURBINES,
+            max_iters=
+                max_iters,
+            strong=
+                strong,
+        )
+
+    else:
+
+        raise ValueError(
+            f"Unknown penalty type: "
+            f"{penalty_type}"
+        )
+
+    print(
+        f"Lower Bound ({penalty_type}): "
+        f"{LB}"
+    )
+
+    # ========================================================
+    # Step 9: lambda
+    # ========================================================
+
+    lambda_raw = (
+        UB
+        - LB
+        + delta
+    )
+
+    if (
+        penalty_type == "cardinality"
+        and lambda_raw < 0
+    ):
+
+        raise ValueError(
+            "Negative cardinality lambda: "
+            f"UB={UB}, LB={LB}. "
+            "Check SDP validity, local candidate "
+            "consistency and objective scaling."
+        )
+
+    if (
+        penalty_type == "spacing"
+        and lambda_raw < 0
+    ):
+
+        print(
+            "WARNING: spacing UB < LB. "
+            "Setting lambda_spacing to 0."
+        )
+
+        lambda_ = 0.0
+
+    else:
+
+        lambda_ = float(
+            lambda_raw
+        )
+
+    print(
+        f"Lambda {penalty_type}: "
+        f"{lambda_}"
+    )
+
+    print(f"lambda: {lambda_}, \n UB: {float(UB)}, \n LB: {float(LB)}")
+
+    # ========================================================
+    # Return local problem too
+    # ========================================================
+
+    return {
+        "lambda": lambda_,
+        "UB": float(UB),
+        "LB": float(LB),
+
+        "candidate_locations":
+            candidate_locations,
+
+        "wake_loss_matrix":
+            wake_loss_matrix,
+
+        "z_reference":
+            z_reference,
+
+        "selected_indices":
+            selected_indices,
+
+        "invalid_pairs":
+            invalid_pairs,
+
+        "grid_resolution":
+            grid_resolution,
+
+        "search_radius":
+            search_radius,
+    }
 # ============================================================
 # CLI
 # ============================================================
@@ -892,7 +1295,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max-iters",
         type=int,
-        required=True,
+        default=10000,
         help="Maximum SCS iterations.",
     )
 
@@ -927,12 +1330,21 @@ if __name__ == "__main__":
     parser.add_argument(
         "--save-memory",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help=(
             "Quantize wake-loss matrix to uint16. "
             "Use --no-save-memory to keep original dtype."
         ),
     )
+
+    parser.add_argument(
+            "--wake-loss-path",
+            type=str,
+            default=None,
+            help=(
+                "Search radius for local SDP"
+            ),
+        )
 
     parser.add_argument(
         "--strong",
@@ -946,11 +1358,20 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    get_penalties(
-        grid_resolution=args.grid_resolution,
-        max_iters=args.max_iters,
-        penalty_type=args.penalty_type,
-        reference_layout=args.reference_layout,
-        save_memory=args.save_memory,
-        strong=args.strong,
-    )
+    if args.wake_loss_path:
+        get_local_penalties(
+            grid_resolution=args.grid_resolution,
+            max_iters=args.max_iters,
+            penalty_type=args.penalty_type,
+            reference_layout=args.reference_layout,
+            wake_loss_path=args.wake_loss_path,
+)
+    else:
+        get_penalties(
+                    grid_resolution=args.grid_resolution,
+                    max_iters=args.max_iters,
+                    penalty_type=args.penalty_type,
+                    reference_layout=args.reference_layout,
+                    save_memory=args.save_memory,
+                    strong=args.strong,
+                )

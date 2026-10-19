@@ -352,13 +352,13 @@ def compute_aep_from_coords(coords):
 
 
 def build_local_candidates(
-    gurobi_positions,
+    positions,
     farm_area,
     radius_m,
     step_m,
     min_distance=396.0,
 ):
-    gurobi_positions = np.asarray(gurobi_positions, dtype=float)
+    positions = np.asarray(positions, dtype=float)
 
     # offset locali
     offsets_1d = np.arange(
@@ -385,14 +385,14 @@ def build_local_candidates(
 
     # genero candidati attorno a ogni turbina Gurobi
     candidate_locations = (
-        gurobi_positions[:, None, :]
+        positions[:, None, :]
         + offsets[None, :, :]
     ).reshape(-1, 2)
 
     # aggiungo esplicitamente le posizioni Gurobi originali
     candidate_locations = np.vstack([
         candidate_locations,
-        gurobi_positions,
+        positions,
     ])
 
     # tengo solo punti dentro il farm boundary
